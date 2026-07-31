@@ -1,0 +1,11 @@
+## .NET / Visual Studio
+bin/
+obj/
+.vs/
+*.user
+
+## Bundled external tool binaries (see tools/README.md)
+tools/*.exe
+
+## Playwright browser cache (if placed locally)
+.playwright/

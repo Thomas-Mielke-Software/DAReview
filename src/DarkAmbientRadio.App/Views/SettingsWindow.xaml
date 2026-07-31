@@ -1,0 +1,84 @@
+<Window x:Class="DarkAmbientRadio.App.Views.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Einstellungen" Height="560" Width="640"
+        WindowStartupLocation="CenterOwner"
+        Background="#111111" Foreground="#FFFFFF"
+        FontFamily="Verdana, Arial, Helvetica" FontSize="12">
+    <Window.Resources>
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#99EEFF"/>
+            <Setter Property="Margin" Value="0,8,0,2"/>
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="Padding" Value="4"/>
+            <Setter Property="Background" Value="#0A0A0A"/>
+            <Setter Property="Foreground" Value="#FFFFFF"/>
+            <Setter Property="BorderBrush" Value="#333333"/>
+        </Style>
+    </Window.Resources>
+    <DockPanel Margin="16">
+        <TextBlock DockPanel.Dock="Top" Text="Verzeichnisse &amp; Werkzeuge" FontSize="16" FontWeight="Bold" Margin="0,0,0,8"/>
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="Abbrechen" Width="100" Margin="0,0,8,0" IsCancel="True"/>
+            <Button Content="Speichern" Width="100" IsDefault="True" Click="OnSave"/>
+        </StackPanel>
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <TextBlock Text="Cloud-Basisverzeichnis"/>
+                <TextBox Text="{Binding CloudBase, UpdateSourceTrigger=PropertyChanged}"/>
+
+                <TextBlock Text="Archiv (320, leer = &lt;Basis&gt;\Dark Ambient)"/>
+                <TextBox Text="{Binding ArchiveDirOverride, UpdateSourceTrigger=PropertyChanged}"/>
+
+                <TextBlock Text="Review (192k, leer = &lt;Basis&gt;\Dark Ambient Review)"/>
+                <TextBox Text="{Binding ReviewDirOverride, UpdateSourceTrigger=PropertyChanged}"/>
+
+                <TextBlock Text="Airplay (leer = &lt;Basis&gt;\Dark Ambient 192kbps)"/>
+                <TextBox Text="{Binding AirplayDirOverride, UpdateSourceTrigger=PropertyChanged}"/>
+
+                <TextBlock Text="Download (leer = %USERPROFILE%\Downloads)"/>
+                <TextBox Text="{Binding DownloadDirOverride, UpdateSourceTrigger=PropertyChanged}"/>
+
+                <TextBlock Text="ffmpeg-Pfad (leer = tools\ffmpeg.exe / PATH)"/>
+                <TextBox Text="{Binding FfmpegPath, UpdateSourceTrigger=PropertyChanged}"/>
+
+                <TextBlock Text="mp3gain-Pfad (leer = tools\mp3gain.exe / PATH)"/>
+                <TextBox Text="{Binding Mp3gainPath, UpdateSourceTrigger=PropertyChanged}"/>
+
+                <Grid Margin="0,4,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                        <TextBlock Text="Bitrate"/>
+                        <TextBox Text="{Binding Bitrate, UpdateSourceTrigger=PropertyChanged}"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="1">
+                        <TextBlock Text="Normalisierung (dB)"/>
+                        <TextBox Text="{Binding NormalizationDb, UpdateSourceTrigger=PropertyChanged}"/>
+                    </StackPanel>
+                </Grid>
+
+                <TextBlock Text="Code-Regex"/>
+                <TextBox Text="{Binding CodeRegex, UpdateSourceTrigger=PropertyChanged}"/>
+
+                <Grid Margin="0,4,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                        <TextBlock Text="Verbinder OHNE"/>
+                        <TextBox Text="{Binding ConnectorOhne, UpdateSourceTrigger=PropertyChanged}"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="1">
+                        <TextBlock Text="Verbinder NUR"/>
+                        <TextBox Text="{Binding ConnectorNur, UpdateSourceTrigger=PropertyChanged}"/>
+                    </StackPanel>
+                </Grid>
+            </StackPanel>
+        </ScrollViewer>
+    </DockPanel>
+</Window>
