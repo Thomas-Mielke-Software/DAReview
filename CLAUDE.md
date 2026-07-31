@@ -66,10 +66,13 @@ Login is manual (reCAPTCHA / email magic link); persistent context means it's us
 - Playback is driven from **code-behind** (`MediaElement` in `MainWindow`), bridged to the MVVM
   `MainViewModel` via `PlayFileRequested` / `StopRequested` events. Position slider, play/pause and
   listen counting live in `MainWindow.xaml.cs`.
-- **Cold-start auto-play**: the hidden `MediaElement` (Height=0) is slow to become play-ready at launch,
-  so `OnLoaded` waits via a `DispatcherTimer` (currently 7 s, see `MainWindow.xaml.cs`) before selecting
-  a random album. The robust alternative is `System.Windows.Media.MediaPlayer` (same engine, no visual
-  binding) — offered but the user chose to keep the timer. Don't swap to NAudio.
+- **Cold-start auto-play**: the hidden `MediaElement` (Height=0) is slow to become play-ready at launch
+  and can silently drop the first `Play()` (position sticks at 0:00). There is no "ready" event, so
+  `MainWindow.xaml.cs` uses a **start watchdog**: after every `Play()`, a 1 s `DispatcherTimer` checks
+  whether `Player.Position` advances; if not, it forces a full source reload (`Source = null` → re-assign
+  → `Play()`), bounded at 10 attempts. Auto-play therefore starts right after first render (no fixed
+  delay). The robust alternative is `System.Windows.Media.MediaPlayer` (same engine, no visual
+  binding) — offered but the user declined. Don't swap to NAudio.
 
 ## Theme
 UI palette matches darkambientradio.de: background `#111111`/`#000000`, text white, primary accent

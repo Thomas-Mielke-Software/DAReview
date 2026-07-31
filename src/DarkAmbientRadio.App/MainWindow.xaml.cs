@@ -14,8 +14,13 @@ namespace DarkAmbientRadio.App;
 /// </summary>
 public partial class MainWindow : Window
 {
+    private const int MaxStartAttempts = 10;
+
     private MainViewModel? _viewModel;
     private readonly DispatcherTimer _positionTimer;
+    private readonly DispatcherTimer _startWatchdog;
+    private Uri? _pendingSource;    // source the watchdog re-loads if Play() was dropped
+    private int _startAttempts;
     private bool _updatingSlider;   // guards programmatic slider updates from re-seeking
     private bool _hasMedia;
 
@@ -24,6 +29,8 @@ public partial class MainWindow : Window
         InitializeComponent();
         _positionTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
         _positionTimer.Tick += (_, _) => UpdatePosition();
+        _startWatchdog = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _startWatchdog.Tick += (_, _) => VerifyPlaybackStarted();
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)
@@ -32,16 +39,12 @@ public partial class MainWindow : Window
         _viewModel.PlayFileRequested += OnPlayFileRequested;
         _viewModel.StopRequested += OnStopRequested;
 
-        // Start on a random album (auto-plays its first track). Give the MediaElement a
-        // moment to fully initialise first — starting playback immediately at load leaves it
-        // loaded but silent.
-        var startupTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(7) };
-        startupTimer.Tick += (_, _) =>
-        {
-            startupTimer.Stop();
-            _viewModel?.SelectRandomAlbum();
-        };
-        startupTimer.Start();
+        // Start on a random album (auto-plays its first track) as soon as the first frame
+        // has rendered. The hidden MediaElement may still drop that first Play() while its
+        // pipeline initialises — the start watchdog detects and repairs that, so no blind
+        // fixed delay is needed.
+        Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle,
+            new Action(() => _viewModel?.SelectRandomAlbum()));
     }
 
     // ----- Playback bridge ---------------------------------------------------
@@ -55,9 +58,11 @@ public partial class MainWindow : Window
         Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
         {
             _hasMedia = true;
-            Player.Source = new Uri(filePath);
+            _pendingSource = new Uri(filePath);
+            Player.Source = _pendingSource;
             Player.Play();
             SetPlaying(true);
+            RestartStartWatchdog();
         }));
     }
 
@@ -65,12 +70,49 @@ public partial class MainWindow : Window
     {
         Dispatcher.Invoke(() =>
         {
+            _startWatchdog.Stop();
+            _pendingSource = null;
             Player.Stop();
             Player.Source = null;
             _hasMedia = false;
             SetPlaying(false);
             ResetTransport();
         });
+    }
+
+    private void RestartStartWatchdog()
+    {
+        _startAttempts = 0;
+        _startWatchdog.Stop();
+        _startWatchdog.Start();
+    }
+
+    /// <summary>
+    /// The MediaElement has no "ready" signal, but it is verifiably playing once its
+    /// position clock advances. A cold-started (hidden) MediaElement can silently drop
+    /// Play() — position then sticks at 0:00. In that case force a full source reload
+    /// (what clicking another track effectively did) and try again, bounded.
+    /// </summary>
+    private void VerifyPlaybackStarted()
+    {
+        if (!_isPlaying || _pendingSource is null || Player.Position > TimeSpan.Zero)
+        {
+            _startWatchdog.Stop();
+            return;
+        }
+
+        if (++_startAttempts >= MaxStartAttempts)
+        {
+            _startWatchdog.Stop();
+            if (_viewModel is not null)
+                _viewModel.StatusText = "Wiedergabe konnte nicht gestartet werden.";
+            return;
+        }
+
+        // Re-assigning the same Uri would be a dependency-property no-op, so clear first.
+        Player.Source = null;
+        Player.Source = _pendingSource;
+        Player.Play();
     }
 
     private void OnMediaOpened(object sender, RoutedEventArgs e)
@@ -96,6 +138,9 @@ public partial class MainWindow : Window
 
     private void OnMediaFailed(object sender, ExceptionRoutedEventArgs e)
     {
+        // A genuinely unplayable file won't be fixed by the watchdog's reload-retries.
+        _startWatchdog.Stop();
+        _pendingSource = null;
         if (_viewModel is not null)
             _viewModel.StatusText = $"Wiedergabefehler: {e.ErrorException.Message}";
     }
@@ -140,6 +185,7 @@ public partial class MainWindow : Window
         {
             Player.Play();
             SetPlaying(true);
+            RestartStartWatchdog();     // no-ops on first tick if position already advanced
         }
     }
 
