@@ -8,7 +8,9 @@ using DarkAmbientRadio.App.Services;
 using DarkAmbientRadio.App.Views;
 using DarkAmbientRadio.Core.Airplay;
 using DarkAmbientRadio.Core.Config;
+using DarkAmbientRadio.Core.Files;
 using DarkAmbientRadio.Core.Library;
+using DarkAmbientRadio.Core.Naming;
 using DarkAmbientRadio.Core.Review;
 using DarkAmbientRadio.Core.Sources;
 
@@ -21,7 +23,11 @@ public partial class MainViewModel : ObservableObject
     private readonly AlbumLibrary _library = new();
     private readonly ClipboardCodeSource _codeSource;
 
+    /// <summary>Concurrent Nextcloud hydration requests — enough to pipeline, not enough to thrash.</summary>
+    private const int PrefetchParallelism = 4;
+
     private TaskCompletionSource? _loginGate;
+    private CancellationTokenSource? _prefetchCts;
     private int _currentTrackIndex;
 
     /// <summary>Raised with a file path when the view should start playing a track.</summary>
@@ -37,6 +43,9 @@ public partial class MainViewModel : ObservableObject
         LoadAlbums();
     }
 
+    /// <summary>The live config instance; the view persists its window placement into it.</summary>
+    public AppConfig Config => _config;
+
     public ObservableCollection<AlbumViewModel> Albums { get; } = new();
 
     [ObservableProperty]
@@ -47,6 +56,8 @@ public partial class MainViewModel : ObservableObject
 
     [ObservableProperty]
     private bool _isBusy;
+
+    partial void OnIsBusyChanged(bool value) => NotifyAlbumCommandsChanged();
 
     [ObservableProperty]
     private bool _showContinueButton;
@@ -78,6 +89,23 @@ public partial class MainViewModel : ObservableObject
         SelectedAlbum = Albums[Random.Shared.Next(Albums.Count)];
     }
 
+    /// <summary>
+    /// Selects the album that lives in <paramref name="folderPath"/>, which auto-plays it.
+    /// Used after an import so the freshly acquired album starts playing. Must be called
+    /// after <see cref="LoadAlbums"/>, whose rebuilt view models are what gets matched.
+    /// </summary>
+    private void SelectAlbumByFolder(string folderPath)
+    {
+        var target = Normalise(folderPath);
+        var match = Albums.FirstOrDefault(
+            a => string.Equals(Normalise(a.Album.FolderPath), target, StringComparison.OrdinalIgnoreCase));
+        if (match is not null)
+            SelectedAlbum = match;
+
+        static string Normalise(string path)
+            => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+    }
+
     // ----- Selection & playback ---------------------------------------------
 
     partial void OnSelectedAlbumChanged(AlbumViewModel? oldValue, AlbumViewModel? newValue)
@@ -93,16 +121,70 @@ public partial class MainViewModel : ObservableObject
             // track's Source replaces the old one (avoids a stop/play race that could
             // swallow the auto-play of the first track).
             StopRequested?.Invoke();
-            PublishCommand.NotifyCanExecuteChanged();
+            NotifyAlbumCommandsChanged();
             return;
         }
 
         newValue.PropertyChanged += OnSelectedAlbumPropertyChanged;
-        PublishCommand.NotifyCanExecuteChanged();
+        NotifyAlbumCommandsChanged();
+
+        PrefetchTracks(newValue);
 
         // Auto-play from the first track.
         _currentTrackIndex = 0;
         PlayCurrentTrack();
+    }
+
+    /// <summary>
+    /// Touches the first byte of every track so Nextcloud hydrates the whole album in one go
+    /// instead of stalling at each track change. Fire-and-forget and deliberately parallel;
+    /// failures are irrelevant here — playback reports its own errors.
+    /// </summary>
+    private void CancelPrefetch()
+    {
+        _prefetchCts?.Cancel();
+        _prefetchCts?.Dispose();
+        _prefetchCts = null;
+    }
+
+    private void PrefetchTracks(AlbumViewModel album)
+    {
+        CancelPrefetch();
+        var cts = new CancellationTokenSource();
+        _prefetchCts = cts;
+
+        var paths = album.Tracks.Select(t => t.FilePath).ToArray();
+        if (paths.Length == 0)
+            return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Parallel.ForEachAsync(
+                    paths,
+                    new ParallelOptions { MaxDegreeOfParallelism = PrefetchParallelism, CancellationToken = cts.Token },
+                    static async (path, token) =>
+                    {
+                        // ReadWrite: the player may already hold this very file open.
+                        // Delete: without it an in-flight prefetch blocks renames, which is
+                        // exactly what the normalisation buttons do to these files.
+                        await using var stream = new FileStream(
+                            path, FileMode.Open, FileAccess.Read,
+                            FileShare.ReadWrite | FileShare.Delete,
+                            bufferSize: 1, useAsync: true);
+                        // ReadExactly, not Read: we want the byte to actually arrive, which is
+                        // what forces Nextcloud to hydrate the placeholder.
+                        var probe = new byte[1];
+                        await stream.ReadExactlyAsync(probe, token);
+                    });
+            }
+            catch (Exception ex) when (ex is OperationCanceledException or IOException
+                                          or UnauthorizedAccessException)
+            {
+                // Album switched away, or a file vanished/is locked — nothing to do.
+            }
+        }, cts.Token);
     }
 
     private void OnSelectedAlbumPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -193,8 +275,10 @@ public partial class MainViewModel : ObservableObject
         try
         {
             var workflow = new AcquisitionWorkflow(_config);
-            await Task.Run(() => workflow.RunAsync(code, WaitForManualLoginAsync, progress, CancellationToken.None));
+            var reviewFolder = await Task.Run(
+                () => workflow.RunAsync(code, WaitForManualLoginAsync, progress, CancellationToken.None));
             LoadAlbums();
+            SelectAlbumByFolder(reviewFolder);   // start reviewing the new album right away
         }
         catch (Exception ex)
         {
@@ -207,30 +291,51 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
-    /// <summary>Imports one or more downloaded ZIPs (drag-and-drop onto the album list).</summary>
-    public async Task ImportZipsAsync(IReadOnlyList<string> zipPaths)
+    /// <summary>
+    /// Imports what was dropped onto the album list and starts playing the result (the first
+    /// item, if several were dropped at once). ZIPs run through the full pipeline
+    /// (unpack → archive → re-encode → review); album <em>folders</em> are taken as they are
+    /// and only relocated into the review directory.
+    /// </summary>
+    public async Task ImportDroppedAsync(IReadOnlyList<string> paths)
     {
         if (IsBusy)
             return;
 
-        var zips = zipPaths
+        var zips = paths
             .Where(p => p.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) && File.Exists(p))
             .ToList();
-        if (zips.Count == 0)
+        var folders = paths.Where(Directory.Exists).ToList();
+
+        if (zips.Count == 0 && folders.Count == 0)
         {
-            StatusText = "Keine .zip-Dateien zum Importieren.";
+            StatusText = "Nichts zum Importieren – .zip-Datei oder Album-Ordner ablegen.";
             return;
         }
 
         IsBusy = true;
         var progress = new Progress<string>(msg => StatusText = msg);
+        var imported = new List<string>();
         try
         {
             var workflow = new AcquisitionWorkflow(_config);
             foreach (var zip in zips)
-                await Task.Run(() => workflow.ProcessZipAsync(zip, progress, CancellationToken.None));
+                imported.Add(await Task.Run(() => workflow.ProcessZipAsync(zip, progress, CancellationToken.None)));
+
+            var importer = new FolderImporter();
+            foreach (var folder in folders)
+            {
+                var result = await Task.Run(
+                    () => importer.Import(folder, _config.ReviewDir, progress, CancellationToken.None));
+                imported.Add(result.TargetPath);
+
+                if (result.SourceToRemove is { } leftover)
+                    await ConfirmAndDeleteSourceAsync(leftover);
+            }
+
             LoadAlbums();
-            StatusText = zips.Count == 1 ? "Import fertig." : $"{zips.Count} Alben importiert.";
+            SelectAlbumByFolder(imported[0]);   // start reviewing the new album right away
+            StatusText = imported.Count == 1 ? "Import fertig." : $"{imported.Count} Alben importiert.";
         }
         catch (Exception ex)
         {
@@ -240,6 +345,31 @@ public partial class MainViewModel : ObservableObject
         {
             IsBusy = false;
         }
+    }
+
+    /// <summary>
+    /// Asks before removing the original after a cross-volume copy. Defaults to "no": the album
+    /// is safely in the review queue either way, so keeping the source costs nothing but space.
+    /// </summary>
+    private async Task ConfirmAndDeleteSourceAsync(string source)
+    {
+        var answer = MessageBox.Show(
+            $"»{Path.GetFileName(source)}« liegt auf einem anderen Laufwerk und wurde deshalb "
+            + "kopiert statt verschoben.\n\nSoll der Ursprungsordner jetzt gelöscht werden?\n\n"
+            + source,
+            "Ursprungsordner löschen?",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No);
+
+        if (answer != MessageBoxResult.Yes)
+        {
+            StatusText = "Kopiert – Ursprungsordner behalten.";
+            return;
+        }
+
+        await Task.Run(() => Directory.Delete(source, recursive: true));
+        StatusText = "Kopiert – Ursprungsordner gelöscht.";
     }
 
     private Task WaitForManualLoginAsync(CancellationToken ct)
@@ -284,6 +414,82 @@ public partial class MainViewModel : ObservableObject
     }
 
     private bool CanPublish() => SelectedAlbum?.CanPublish == true;
+
+    private void NotifyAlbumCommandsChanged()
+    {
+        PublishCommand.NotifyCanExecuteChanged();
+        NormalizeAlbumTitleCommand.NotifyCanExecuteChanged();
+        NormalizeArtistCommand.NotifyCanExecuteChanged();
+    }
+
+    // ----- Normalisation -----------------------------------------------------
+
+    private bool HasSelectedAlbum() => SelectedAlbum is not null && !IsBusy;
+
+    /// <summary>Title-cases the album title in the folder name, track filenames and ID3 tags.</summary>
+    [RelayCommand(CanExecute = nameof(HasSelectedAlbum))]
+    private Task NormalizeAlbumTitleAsync()
+        => NormalizeAsync((normalizer, path) => normalizer.NormalizeAlbumTitle(path), "Album-Titel");
+
+    /// <summary>Title-cases the artist in the folder name, track filenames and ID3 tags.</summary>
+    [RelayCommand(CanExecute = nameof(HasSelectedAlbum))]
+    private Task NormalizeArtistAsync()
+        => NormalizeAsync((normalizer, path) => normalizer.NormalizeArtist(path), "Artist");
+
+    private async Task NormalizeAsync(Func<AlbumNormalizer, string, NormalizeResult> apply, string what)
+    {
+        var album = SelectedAlbum;
+        if (album is null || IsBusy)
+            return;
+
+        var folderPath = album.Album.FolderPath;
+
+        // Every open handle on these files has to go before renaming: the player holds the
+        // current track, and a Nextcloud prefetch may still be streaming several more.
+        StopRequested?.Invoke();
+        CancelPrefetch();
+
+        IsBusy = true;
+        try
+        {
+            var result = await Task.Run(() => RetryWhileLocked(() => apply(new AlbumNormalizer(), folderPath)));
+            LoadAlbums();
+            SelectAlbumByFolder(result.FolderPath);
+            StatusText = result.AnyChange
+                ? $"{what} normalisiert – {result.RenamedFiles} Datei(en) umbenannt, "
+                  + $"{result.RetaggedFiles} Tag(s) aktualisiert"
+                  + (result.FolderRenamed ? ", Ordner umbenannt." : ".")
+                : $"{what}: Schreibweise war bereits normalisiert.";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Normalisierung fehlgeschlagen: {ex.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    /// <summary>
+    /// Releasing the media file handle after <see cref="StopRequested"/> is not instant, so a
+    /// first rename attempt can still hit a lock. Retrying is safe because normalisation is
+    /// idempotent — already-correct names and tags are simply left untouched.
+    /// </summary>
+    private static T RetryWhileLocked<T>(Func<T> action, int attempts = 5)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return action();
+            }
+            catch (IOException) when (attempt < attempts)
+            {
+                Thread.Sleep(200);
+            }
+        }
+    }
 
     // ----- Settings ----------------------------------------------------------
 

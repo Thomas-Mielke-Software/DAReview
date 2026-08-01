@@ -11,7 +11,7 @@ Shoutcast on a Debian server (out of scope here).
 
 ## Stack & layout
 - **C# / .NET 9, WPF (MVVM, CommunityToolkit.Mvvm).** Playwright (.NET) for browser automation,
-  CliWrap for ffmpeg/mp3gain, xUnit for tests.
+  CliWrap for ffmpeg/mp3gain, TagLibSharp for ID3 tags, xUnit for tests.
 - `src/DarkAmbientRadio.Core` — all logic (config, Bandcamp, files, audio, library, review, airplay).
 - `src/DarkAmbientRadio.App` — WPF UI (acquisition trigger, album list, player, settings).
 - `tests/DarkAmbientRadio.Core.Tests` — xUnit; the pure logic is covered here.
@@ -50,7 +50,26 @@ these (or credentials) sneak in.
 - **Listen counter is a percentage**: +100%/trackcount per fully-played track (200% = twice through).
   Persisted as `CompletedTrackPlays` in a hidden **`.review.json`** sidecar per album folder (travels
   with Nextcloud sync). Decisions per track number live there too.
-- **Track filename schema**: `Artist - Album - NN Title.mp3`; `NN` after the last " - " is the number.
+- **Track filename schema**: `Artist - Album - NN Title.mp3`. The **track number anchors the split** —
+  do *not* count separators from either end. Both album and title may contain " - " themselves;
+  compilations are named `Label - Album - NN TrackArtist - Title` (e.g. `Cryo Chamber - Tomb of
+  Primordials - 01 Dahlia's Tear - Crystal Scars…`). `TrackFileName.TryParse` splits on " - " and
+  scans left to right (from index 1) for the first segment matching `^\d{1,3}\b`: segment 0 = artist,
+  everything before the hit = album, the hit and everything after = `NumberedTitle`.
+  Taking the number after the *last* separator was a bug — such albums parsed to **zero tracks** and
+  were silently dropped by `LoadReviewQueue`, invisible in the UI even after a restart.
+  `TrackNumberParser` just delegates here; keep the two in sync.
+- **Drag & drop onto the album list** takes ZIPs *and* album folders. ZIPs run the full pipeline
+  (unpack → archive → re-encode → review); **folders are only relocated into the review dir, not
+  re-encoded** — so a dropped 320k folder stays 320k. `FolderImporter` prefers `Directory.Move`
+  and only copies across volumes; it never deletes the source itself but reports it back so
+  `MainViewModel` can ask first (default "no").
+- **Normalisation buttons ("Aa Artist" / "Aa Album")** fix *capitalisation only*, across folder name,
+  track filenames **and** ID3 tags (`AlbumNormalizer`). `TitleCaseNormalizer` deliberately skips
+  already-mixed-case words ("McCoy", "DiN") and roman numerals, and keeps minor words ("of", "the")
+  lowercase unless first/last. Case-only renames need a **temp-name detour** — Windows treats
+  `x.mp3`/`X.mp3` as the same path and `File.Move` would fail. The op is idempotent, so the caller
+  retries on `IOException` (the player may still hold the current track open).
 - **Directory defaults** (all under `CloudBase` = `D:\Nextcloud`, individually overridable):
   Archive = `…\Multimedia\Music\Styles\Dark Ambient` (untouched MP3 320 master — note the deep path),
   Review = `…\Dark Ambient Review` (192k queue), Airplay = `…\Dark Ambient 192kbps`.
@@ -58,14 +77,33 @@ these (or credentials) sneak in.
 ## Bandcamp flow (verified against the live page)
 After redeeming, the code page navigates straight to `bandcamp.com/download?...` — there is **no
 "Code redeemed!" text** (waiting for it was a bug). The format picker is a native `<select>`; MP3 320
-has option value **`mp3-320`** (label includes size). "Download" is a plain `<a>` whose accessible name
-is exactly "Download". Selecting a format updates the link href async — wait ~1.5 s before clicking.
+has option value **`mp3-320`** (label includes size). The download control is a plain `<a>` whose
+accessible name is **"Download &lt;album title&gt;"** — *not* exactly "Download" (matching it exactly
+was a bug: the wait never completed). Match `^\s*Download\b`, which also excludes "Need download
+help?". Selecting a format updates the link href async — wait ~1.5 s before clicking.
 Login is manual (reCAPTCHA / email magic link); persistent context means it's usually needed only once.
+When the ZIP isn't cached server-side the page shows **"Preparing…"** instead and only swaps in the
+download link once built — `WaitForDownloadReadyAsync` polls for it (10 min budget, 15 s progress
+heartbeat) before clicking. Clicking during "Preparing…" does nothing.
+Closing the browser window cancels the run (`IBrowserContext.Close` → linked CTS), so the
+manual-login gate can't hang on a dead browser.
 
 ## Player quirks
+- **Nextcloud prefetch**: selecting an album fires a parallel (4×) fire-and-forget read of the first
+  byte of every track (`MainViewModel.PrefetchTracks`, `ReadExactlyAsync`) so the whole album
+  hydrates in one go instead of stalling at each track change. Opens with `FileShare.ReadWrite` —
+  the player may already hold the current file.
 - Playback is driven from **code-behind** (`MediaElement` in `MainWindow`), bridged to the MVVM
   `MainViewModel` via `PlayFileRequested` / `StopRequested` events. Position slider, play/pause and
   listen counting live in `MainWindow.xaml.cs`.
+- **Standby kills the MediaElement**: resuming from sleep leaves it dead or already failed.
+  `SystemEvents.PowerModeChanged` (Resume) → wait 2 s for the audio device → reload the same
+  `_currentSource`, seek back via `_resumePosition` in `MediaOpened`, resume playing. Hence
+  `OnMediaFailed` must *not* clear `_currentSource` — the recovery needs it. Unsubscribe in
+  `OnClosing`: `SystemEvents` is static and would leak the window.
+- **Window placement** is persisted into `AppConfig.Window` on closing (`RestoreBounds`, not
+  `Left`/`Top`, so a maximised window can be un-maximised next start) and only restored when
+  `WindowPlacement.IsOnScreen` still matches the current virtual desktop.
 - **Cold-start auto-play**: the hidden `MediaElement` (Height=0) is slow to become play-ready at launch
   and can silently drop the first `Play()` (position sticks at 0:00). There is no "ready" event, so
   `MainWindow.xaml.cs` uses a **start watchdog**: after every `Play()`, a 1 s `DispatcherTimer` checks
@@ -77,4 +115,10 @@ Login is manual (reCAPTCHA / email magic link); persistent context means it's us
 ## Theme
 UI palette matches darkambientradio.de: background `#111111`/`#000000`, text white, primary accent
 cyan `#99EEFF`, secondary accent lime `#93C900`, font Verdana. App icon (`appicon.ico`) is the "DAR"
-lettering (Eccentric font) in gold on a dark tile.
+lettering (Eccentric font) **glowing cyan** on a dark rounded tile with a cyan border — 7 frames,
+16–256 px, PNG-compressed. Regenerating it needs `Eccentric.ttf` (not in the repo; the user keeps it
+in Nextcloud) and a GDI+ renderer: **Regular** outlines widened by a stroke, *not* `FontStyle.Bold`
+— GDI+' synthetic bold closes the counters and destroys the letterforms. The glow is two blurs
+(wide saturated `#12B8E8` + tight `#99EEFF`) behind a near-white core; frames ≤32 px need a
+noticeably weaker halo or the lettering turns to mush. The website favicon set
+(`favicon.ico` 16/32/48 + PNGs + webmanifest) comes out of the same renderer so site and app match.

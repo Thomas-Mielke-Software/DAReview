@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Microsoft.Playwright;
 
 namespace DarkAmbientRadio.Core.Bandcamp;
@@ -10,12 +11,28 @@ namespace DarkAmbientRadio.Core.Bandcamp;
 /// NOTE: the CSS/text selectors below are a best-effort first pass and must be verified
 /// against the live page during the acquisition dry-run (see plan, step A2).
 /// </summary>
-public sealed class BandcampRedeemer : IAsyncDisposable
+public sealed partial class BandcampRedeemer : IAsyncDisposable
 {
     public const string YumUrl = "https://cryochamber.bandcamp.com/yum";
 
+    /// <summary>How long to wait for Bandcamp to finish preparing the ZIP server-side.</summary>
+    private static readonly TimeSpan PrepareTimeout = TimeSpan.FromMinutes(10);
+
+    /// <summary>How often to re-report progress while waiting on "preparing".</summary>
+    private static readonly TimeSpan PrepareHeartbeat = TimeSpan.FromSeconds(15);
+
+    /// <summary>
+    /// The ready link reads "Download &lt;album title&gt;", so anchor on the leading word rather
+    /// than matching the whole name. The anchor also keeps "Need download help?" out.
+    /// </summary>
+    [GeneratedRegex(@"^\s*Download\b", RegexOptions.IgnoreCase)]
+    private static partial Regex DownloadLinkName();
+
     private readonly string _userDataDir;
     private readonly string _downloadDir;
+
+    /// <summary>Cancelled when the user closes the browser window, so waits don't hang forever.</summary>
+    private readonly CancellationTokenSource _browserClosed = new();
 
     private IPlaywright? _playwright;
     private IBrowserContext? _context;
@@ -41,7 +58,30 @@ public sealed class BandcampRedeemer : IAsyncDisposable
         bool addToCollection,
         Func<CancellationToken, Task> waitForManualLogin,
         IProgress<string>? progress = null,
-        CancellationToken ct = default)
+        CancellationToken callerToken = default)
+    {
+        // Closing the browser window must abort the run — otherwise a wait (most notably the
+        // manual-login gate) would sit there forever with a dead browser behind it.
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(callerToken, _browserClosed.Token);
+        var ct = linked.Token;
+
+        try
+        {
+            return await RedeemCoreAsync(code, addToCollection, waitForManualLogin, progress, ct);
+        }
+        catch (OperationCanceledException) when (_browserClosed.IsCancellationRequested
+                                                 && !callerToken.IsCancellationRequested)
+        {
+            throw new InvalidOperationException("Browserfenster wurde geschlossen – Vorgang abgebrochen.");
+        }
+    }
+
+    private async Task<string> RedeemCoreAsync(
+        string code,
+        bool addToCollection,
+        Func<CancellationToken, Task> waitForManualLogin,
+        IProgress<string>? progress,
+        CancellationToken ct)
     {
         var page = await EnsurePageAsync(ct);
 
@@ -92,6 +132,8 @@ public sealed class BandcampRedeemer : IAsyncDisposable
 
         progress?.Report("Wähle Format MP3 320 …");
         await SelectMp3320Async(formatSelect);
+
+        await WaitForDownloadReadyAsync(page, progress, ct);
 
         progress?.Report("Starte Download …");
         var path = await DownloadAsync(page, ct);
@@ -186,13 +228,52 @@ public sealed class BandcampRedeemer : IAsyncDisposable
         await formatSelect.Page.WaitForTimeoutAsync(1500);
     }
 
+    /// <summary>The download anchor, matched on its leading "Download" word.</summary>
+    private static ILocator DownloadLink(IPage page)
+        => page.GetByRole(AriaRole.Link, new PageGetByRoleOptions { NameRegex = DownloadLinkName() });
+
+    /// <summary>
+    /// When the ZIP is not cached server-side, Bandcamp first shows "Preparing…" in place of the
+    /// download link and only swaps it to "Download &lt;album title&gt;" once the archive is built.
+    /// Clicking during that phase does nothing, so poll until the real link appears.
+    /// </summary>
+    private static async Task WaitForDownloadReadyAsync(IPage page, IProgress<string>? progress, CancellationToken ct)
+    {
+        var started = DateTime.UtcNow;
+        var nextHeartbeat = TimeSpan.Zero;
+
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (await IsVisibleAsync(DownloadLink(page)))
+            {
+                if (nextHeartbeat > TimeSpan.Zero)
+                    progress?.Report("Download ist bereit.");
+                return;
+            }
+
+            var elapsed = DateTime.UtcNow - started;
+            if (elapsed >= PrepareTimeout)
+                throw new TimeoutException(
+                    $"Bandcamp hat den Download nach {PrepareTimeout.TotalMinutes:0} Minuten nicht bereitgestellt.");
+
+            // Re-report periodically: a single message would look like a hang for minutes.
+            if (elapsed >= nextHeartbeat)
+            {
+                progress?.Report($"Bandcamp bereitet den Download vor … ({elapsed.TotalSeconds:0} s)");
+                nextHeartbeat = elapsed + PrepareHeartbeat;
+            }
+
+            await page.WaitForTimeoutAsync(1000);
+        }
+    }
+
     private async Task<string> DownloadAsync(IPage page, CancellationToken ct)
     {
         var download = await page.RunAndWaitForDownloadAsync(async () =>
         {
-            // The "Download" link is a plain text anchor; match its exact accessible name
-            // so it is not confused with "Need download help?".
-            var link = page.GetByRole(AriaRole.Link, new PageGetByRoleOptions { Name = "Download", Exact = true });
+            var link = DownloadLink(page);
             if (await IsVisibleAsync(link))
             {
                 await link.First.ClickAsync();
@@ -223,6 +304,10 @@ public sealed class BandcampRedeemer : IAsyncDisposable
                     AcceptDownloads = true,
                     ViewportSize = ViewportSize.NoViewport,
                 });
+
+            // Fires when the user closes the window (and on our own DisposeAsync, which is
+            // harmless — by then the run is over anyway).
+            _context.Close += (_, _) => _browserClosed.Cancel();
         }
 
         return _context.Pages.Count > 0 ? _context.Pages[0] : await _context.NewPageAsync();
@@ -245,5 +330,6 @@ public sealed class BandcampRedeemer : IAsyncDisposable
         if (_context is not null)
             await _context.DisposeAsync();
         _playwright?.Dispose();
+        _browserClosed.Dispose();
     }
 }

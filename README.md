@@ -25,6 +25,13 @@ Ausstrahlung bereitstellen.
    pwsh src/DarkAmbientRadio.App/bin/Debug/net9.0-windows/playwright.ps1 install chromium
    ```
 
+   Ist `pwsh` (PowerShell Core) nicht installiert, funktioniert auch Windows PowerShell – einfach
+   ohne `pwsh`-Präfix aufrufen:
+
+   ```powershell
+   src/DarkAmbientRadio.App/bin/Debug/net9.0-windows/playwright.ps1 install chromium
+   ```
+
 4. Bauen & starten:
 
    ```bash
@@ -49,10 +56,21 @@ Beim ersten Start werden Defaults verwendet; über **Einstellungen** anpassbar u
 - **Code einlösen** – liest den Code aus der Zwischenablage (Form `12ab-3cd4`), öffnet ein
   Browserfenster und durchläuft die Cryo-Chamber-„yum"-Seite. Ist eine Anmeldung nötig
   (reCAPTCHA / Login-Link per E-Mail), erscheint **» Weiter (Login erledigt)** – erst manuell im
-  Browser einloggen, dann klicken. Danach läuft alles automatisch bis das Album im Review liegt.
+  Browser einloggen, dann klicken. Danach läuft alles automatisch bis das Album im Review liegt –
+  es wird anschließend ausgewählt und die Wiedergabe startet. Dasselbe gilt für bereits
+  heruntergeladene ZIPs, die per Drag & Drop auf die Albenliste gezogen werden.
 - **Albenliste** – zeigt jedes Review-Album mit Hördurchgang in Prozent (100 % = einmal komplett
   durchgehört, 200 % = zweimal). Klick startet die automatische Wiedergabe ab Track 1;
   Doppelklick auf einen Track spielt gezielt diesen.
+- **Drag & Drop auf die Albenliste** – akzeptiert heruntergeladene `.zip`-Dateien *und* fertige
+  Album-Ordner. ZIPs durchlaufen den vollen Ablauf (entpacken → Archiv → 192k → Review);
+  Ordner werden **unverändert** in den Review-Ordner *verschoben* (nicht umkodiert). Nur wenn
+  Quelle und Ziel auf verschiedenen Laufwerken liegen, wird kopiert – dann fragt die App nach,
+  ob der Ursprungsordner gelöscht werden soll (Voreinstellung: nein).
+- **Aa Artist / Aa Album** – normalisiert die Schreibweise des Artists bzw. des Album-Titels
+  (`ETERNAL VOID` → `Eternal Void`), und zwar in einem Rutsch im Ordnernamen, in allen
+  Track-Dateinamen und in den ID3-Tags. Bewusst mixed-case geschriebene Namen (`DiN`, `McCoy`)
+  und römische Ziffern bleiben unangetastet.
 - **Approve/Reject** – Entscheidung pro Track. Sind **alle** Tracks entschieden, wird **Airplay**
   aktiv: die freigegebenen Tracks werden nach `Dark Ambient 192kbps` kopiert; bei Ablehnungen
   erhält der Ordner den kürzeren der beiden Zusätze `[OHNE TRACK …]` / `[NUR TRACK …]`.

@@ -23,3 +23,26 @@ tools/
   ffmpeg.exe
   mp3gain.exe
 ```
+
+## Playwright-Chromium
+
+Kommt **nicht** in diesen Ordner: der Browser wird von Playwright selbst verwaltet und landet im
+Cache unter `%USERPROFILE%\AppData\Local\ms-playwright`. Einmalig nach dem ersten Build
+installieren (lädt ~130 MB):
+
+```bash
+dotnet build
+pwsh src/DarkAmbientRadio.App/bin/Debug/net9.0-windows/playwright.ps1 install chromium
+```
+
+Ohne `pwsh` (PowerShell Core) tut es auch Windows PowerShell – dann ohne das `pwsh`-Präfix:
+
+```powershell
+src/DarkAmbientRadio.App/bin/Debug/net9.0-windows/playwright.ps1 install chromium
+```
+
+Das Skript `playwright.ps1` entsteht erst beim Build im Ausgabeverzeichnis; für einen
+Release-Build entsprechend `bin\Release\net9.0-windows\` verwenden.
+
+- Zweck: Bandcamp-Code-Einlösung und Download (headed, persistente Session).
+- Die Anmeldedaten/Session liegen separat in `%APPDATA%\DarkAmbientRadio\browser`.

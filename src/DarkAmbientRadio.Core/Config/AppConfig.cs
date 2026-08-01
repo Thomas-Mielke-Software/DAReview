@@ -49,6 +49,11 @@ public sealed class AppConfig
     public string ConnectorOhne { get; set; } = "und";
     public string ConnectorNur { get; set; } = "UND";
 
+    // ----- Window -------------------------------------------------------------
+
+    /// <summary>Last main-window placement; null until the window has been closed once.</summary>
+    public WindowPlacement? Window { get; set; }
+
     // ----- Resolved (non-serialised) accessors -------------------------------
 
     [JsonIgnore]

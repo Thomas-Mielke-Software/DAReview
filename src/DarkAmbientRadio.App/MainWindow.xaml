@@ -6,7 +6,7 @@
         Background="#111111" Foreground="#FFFFFF"
         FontFamily="Verdana, Arial, Helvetica" FontSize="12"
         Icon="appicon.ico"
-        Loaded="OnLoaded">
+        Loaded="OnLoaded" Closing="OnClosing">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
 
@@ -183,11 +183,22 @@
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <TextBlock Grid.Column="0" Text="{Binding SelectedAlbum.Name}"
                                FontSize="18" FontWeight="Bold" Foreground="#99EEFF"
                                TextWrapping="Wrap" VerticalAlignment="Center"/>
-                    <Button Grid.Column="1" Content="Airplay ▶" Command="{Binding PublishCommand}"
+                    <!-- Capitalisation fixes: folder name, track filenames and ID3 tags. -->
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center"
+                                Margin="10,0,10,0">
+                        <Button Content="Aa Artist" Command="{Binding NormalizeArtistCommand}"
+                                Padding="10,8" Margin="0,0,6,0"
+                                ToolTip="Schreibweise des Artists normalisieren (Ordner, Dateinamen, ID3-Tags)"/>
+                        <Button Content="Aa Album" Command="{Binding NormalizeAlbumTitleCommand}"
+                                Padding="10,8" Margin="0"
+                                ToolTip="Schreibweise des Album-Titels normalisieren (Ordner, Dateinamen, ID3-Tags)"/>
+                    </StackPanel>
+                    <Button Grid.Column="2" Content="Airplay ▶" Command="{Binding PublishCommand}"
                             Foreground="#0A0A0A" Background="#93C900" BorderBrush="#C4F52E"
                             Padding="14,8" Margin="0" FontWeight="Bold"/>
                 </Grid>
