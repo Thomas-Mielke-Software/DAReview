@@ -77,6 +77,30 @@ public class FolderImporterTests : IDisposable
         => Assert.Throws<DirectoryNotFoundException>(
             () => new FolderImporter().Import(Path.Combine(_root, "ghost"), Path.Combine(_root, "review")));
 
+    // The workflow decides from this whether a dropped folder still has to be archived, and
+    // whether it is a review folder being dropped back onto itself.
+    [Fact]
+    public void IsAtOrUnder_RecognisesTheFolderItselfAndItsChildren()
+    {
+        var root = Path.Combine(_root, "archive");
+
+        Assert.True(FolderImporter.IsAtOrUnder(root, root));
+        Assert.True(FolderImporter.IsAtOrUnder(root, Path.Combine(root, "Artist - Album")));
+        Assert.True(FolderImporter.IsAtOrUnder(root, Path.Combine(root, "sub", "Artist - Album")));
+        Assert.True(FolderImporter.IsAtOrUnder(root, root + Path.DirectorySeparatorChar));
+        Assert.True(FolderImporter.IsAtOrUnder(root.ToUpperInvariant(), Path.Combine(root, "Artist - Album")));
+    }
+
+    [Fact]
+    public void IsAtOrUnder_DoesNotFallForASharedNamePrefix()
+    {
+        var root = Path.Combine(_root, "Dark Ambient");
+
+        Assert.False(FolderImporter.IsAtOrUnder(root, Path.Combine(_root, "Dark Ambient Review", "Album")));
+        Assert.False(FolderImporter.IsAtOrUnder(root, _root));
+        Assert.False(FolderImporter.IsAtOrUnder("", Path.Combine(root, "Album")));
+    }
+
     [Fact]
     public void Import_KeepsNestedSubfolders()
     {

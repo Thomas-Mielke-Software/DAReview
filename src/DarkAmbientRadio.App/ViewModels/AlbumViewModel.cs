@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
 using DarkAmbientRadio.Core.Models;
 using DarkAmbientRadio.Core.Review;
 
@@ -47,7 +48,29 @@ public partial class AlbumViewModel : ObservableObject
         RefreshListenPercent();
     }
 
+    /// <summary>
+    /// Approves everything still undecided in one go; already rejected tracks keep their
+    /// decision (a stray click here must not silently undo a reject).
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(CanApproveAll))]
+    private void ApproveAll()
+    {
+        if (_store.ApproveUndecided(Album) == 0)
+            return;
+
+        foreach (var track in Tracks)
+            track.InitializeDecision();
+
+        RefreshDecisionState();
+    }
+
+    private bool CanApproveAll() => Tracks.Any(t => t.Decision == TrackDecision.Undecided);
+
     private void RefreshListenPercent() => ListenPercent = Album.ListenPercent;
 
-    private void RefreshDecisionState() => CanPublish = Album.AllTracksDecided && !Album.State.Published;
+    private void RefreshDecisionState()
+    {
+        CanPublish = Album.AllTracksDecided && !Album.State.Published;
+        ApproveAllCommand.NotifyCanExecuteChanged();
+    }
 }

@@ -97,6 +97,24 @@
             </Style.Triggers>
         </Style>
 
+        <!-- Counterpart to "Airplay ▶": discards the album. Same red family as the track
+             reject buttons, but only fully saturated on hover — it deletes folders. -->
+        <Style x:Key="RejectAlbumButtonStyle" TargetType="Button" BasedOn="{StaticResource DecisionButton}">
+            <Setter Property="Background" Value="#7E2A22"/>
+            <Setter Property="BorderBrush" Value="#C0392B"/>
+            <Setter Property="Foreground" Value="#FFD9D5"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#C0392B"/>
+                    <Setter Property="BorderBrush" Value="#E87070"/>
+                    <Setter Property="Foreground" Value="#FFFFFF"/>
+                </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Opacity" Value="0.45"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
         <!-- Album list item: cyan selection highlight. -->
         <Style TargetType="ListBoxItem">
             <Setter Property="Padding" Value="2"/>
@@ -149,10 +167,10 @@
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
-            <!-- Album list (drop target for .zip) -->
+            <!-- Album list (drop target for .zip files and album folders) -->
             <DockPanel Grid.Column="0" Margin="12">
                 <TextBlock DockPanel.Dock="Top" Foreground="#667777" FontSize="11" Margin="2,0,2,6"
-                           Text="Alben im Review — .zip hierher ziehen zum Importieren"/>
+                           Text="Alben im Review — .zip oder Album-Ordner hierher ziehen"/>
                 <ListBox Background="#0A0A0A" BorderBrush="#222222" Foreground="#FFFFFF"
                          AllowDrop="True" DragOver="OnAlbumListDragOver" Drop="OnAlbumListDrop"
                          ItemsSource="{Binding Albums}"
@@ -184,6 +202,7 @@
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <TextBlock Grid.Column="0" Text="{Binding SelectedAlbum.Name}"
                                FontSize="18" FontWeight="Bold" Foreground="#99EEFF"
@@ -195,12 +214,20 @@
                                 Padding="10,8" Margin="0,0,6,0"
                                 ToolTip="Schreibweise des Artists normalisieren (Ordner, Dateinamen, ID3-Tags)"/>
                         <Button Content="Aa Album" Command="{Binding NormalizeAlbumTitleCommand}"
-                                Padding="10,8" Margin="0"
+                                Padding="10,8" Margin="0,0,14,0"
                                 ToolTip="Schreibweise des Album-Titels normalisieren (Ordner, Dateinamen, ID3-Tags)"/>
+                        <Button Content="✓ Alle" Command="{Binding SelectedAlbum.ApproveAllCommand}"
+                                Foreground="#93C900" BorderBrush="#3A4F00"
+                                Padding="10,8" Margin="0" FontWeight="Bold"
+                                ToolTip="Alle noch nicht bewerteten Tracks freigeben (Abgelehnte bleiben abgelehnt)"/>
                     </StackPanel>
                     <Button Grid.Column="2" Content="Airplay ▶" Command="{Binding PublishCommand}"
                             Foreground="#0A0A0A" Background="#93C900" BorderBrush="#C4F52E"
                             Padding="14,8" Margin="0" FontWeight="Bold"/>
+                    <Button Grid.Column="3" Content="✕ Ablehnen" Command="{Binding RejectAlbumCommand}"
+                            Style="{StaticResource RejectAlbumButtonStyle}"
+                            Padding="14,8" Margin="10,0,0,0"
+                            ToolTip="Album verwerfen – Ordner in den Papierkorb verschieben"/>
                 </Grid>
 
                 <!-- Audio player (no visual surface needed for MP3) -->
@@ -228,6 +255,46 @@
                         <TextBlock x:Name="TotalTime" Grid.Column="3" Text="0:00" Margin="8,0,0,0"
                                    VerticalAlignment="Center" Foreground="#889999" MinWidth="38"/>
                     </Grid>
+                </Border>
+
+                <!-- ID3 info of the playing track. Docked after the transport bar, so it lands
+                     between the track list and the player. -->
+                <Border DockPanel.Dock="Bottom" Background="#0A0A0A" BorderBrush="#222222" BorderThickness="1"
+                        CornerRadius="4" Padding="10,7" Margin="0,8,0,0"
+                        Visibility="{Binding HasTrackInfo, Converter={StaticResource BoolToVis}}">
+                    <StackPanel>
+                        <TextBlock Text="{Binding TrackInfo.Title}" Foreground="#99EEFF" FontWeight="Bold"
+                                   TextTrimming="CharacterEllipsis"/>
+                        <ItemsControl ItemsSource="{Binding TrackInfo.Chips}" Margin="0,5,0,0">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel Orientation="Horizontal"/>
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate DataType="{x:Type vm:TrackInfoChip}">
+                                    <StackPanel Orientation="Horizontal" Margin="0,2,18,0">
+                                        <TextBlock Text="{Binding Label}" Foreground="#667777" Margin="0,0,6,0"/>
+                                        <TextBlock Text="{Binding Value}" TextTrimming="CharacterEllipsis"
+                                                   MaxWidth="260">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Foreground" Value="#FFFFFF"/>
+                                                    <Style.Triggers>
+                                                        <!-- e.g. a 320k folder import that never got re-encoded -->
+                                                        <DataTrigger Binding="{Binding IsWarning}" Value="True">
+                                                            <Setter Property="Foreground" Value="#E8A317"/>
+                                                            <Setter Property="FontWeight" Value="Bold"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
                 </Border>
 
                 <ScrollViewer VerticalScrollBarVisibility="Auto">

@@ -1,0 +1,65 @@
+<Window x:Class="DarkAmbientRadio.App.Views.DeleteAlbumWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Album ablehnen" SizeToContent="Height" Width="520"
+        ResizeMode="NoResize" ShowInTaskbar="False"
+        WindowStartupLocation="CenterOwner"
+        Background="#111111" Foreground="#FFFFFF"
+        FontFamily="Verdana, Arial, Helvetica" FontSize="12">
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="Padding" Value="12,7"/>
+            <Setter Property="MinWidth" Value="110"/>
+            <Setter Property="Background" Value="#1A1A1A"/>
+            <Setter Property="Foreground" Value="#99EEFF"/>
+            <Setter Property="BorderBrush" Value="#333333"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="bd" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1"
+                                CornerRadius="3" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="bd" Property="BorderBrush" Value="#99EEFF"/>
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="bd" Property="BorderBrush" Value="#99EEFF"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <StackPanel Margin="18">
+        <TextBlock Text="Album ablehnen und löschen?" FontSize="15" FontWeight="Bold" Foreground="#E87070"/>
+
+        <TextBlock x:Name="AlbumNameText" Margin="0,12,0,0" FontWeight="Bold" TextWrapping="Wrap"/>
+        <TextBlock x:Name="ReviewPathText" Margin="0,4,0,0" Foreground="#889999" TextWrapping="Wrap"/>
+
+        <!-- Only offered when the 320k master is actually still there under its original name. -->
+        <CheckBox x:Name="ArchiveCheckBox" Margin="0,14,0,0" Foreground="#FFFFFF"
+                  Visibility="Collapsed"
+                  Content="Auch aus dem Archiv löschen (320k-Master)"/>
+        <TextBlock x:Name="ArchivePathText" Margin="20,3,0,0" Foreground="#889999" TextWrapping="Wrap"
+                   Visibility="Collapsed"/>
+        <TextBlock x:Name="NoArchiveText" Margin="0,14,0,0" Foreground="#667777" TextWrapping="Wrap"
+                   Visibility="Collapsed"
+                   Text="Im Archiv liegt kein gleichnamiger Ordner – dort wird nichts gelöscht."/>
+
+        <TextBlock Margin="0,14,0,0" Foreground="#667777" TextWrapping="Wrap"
+                   Text="Die Ordner wandern in den Papierkorb und lassen sich von dort zurückholen."/>
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+            <Button x:Name="CancelButton" Content="Abbrechen" Margin="0,0,8,0" IsCancel="True"/>
+            <!-- Deliberately not IsDefault: Enter must not delete an album. -->
+            <Button Content="✕ Löschen" Click="OnDelete"
+                    Background="#7E2A22" BorderBrush="#C0392B" Foreground="#FFD9D5" FontWeight="Bold"/>
+        </StackPanel>
+    </StackPanel>
+</Window>

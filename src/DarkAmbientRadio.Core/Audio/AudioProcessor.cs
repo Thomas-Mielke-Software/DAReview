@@ -1,5 +1,6 @@
 using System.Globalization;
 using CliWrap;
+using DarkAmbientRadio.Core.Files;
 
 namespace DarkAmbientRadio.Core.Audio;
 
@@ -27,9 +28,15 @@ public sealed class AudioProcessor
     /// Processes every file in <paramref name="sourceFolder"/> into a same-named folder
     /// under <paramref name="reviewDir"/> and returns that destination path.
     /// </summary>
+    /// <param name="reencode">
+    /// False takes the MP3s over unchanged instead of running them through ffmpeg — for material
+    /// that already is exactly what this would produce, where a second lossy pass only costs
+    /// quality. Normalisation runs either way.
+    /// </param>
     public async Task<string> ProcessAlbumAsync(
         string sourceFolder,
         string reviewDir,
+        bool reencode = true,
         IProgress<string>? progress = null,
         CancellationToken ct = default)
     {
@@ -47,15 +54,30 @@ public sealed class AudioProcessor
             if (name.Equals(Models.ReviewState.FileName, StringComparison.OrdinalIgnoreCase))
                 continue;
 
+            // Nextcloud may hold this file as a placeholder; ffmpeg and File.Copy both fail on
+            // one whose on-demand fetch stumbles, so pull it down first and retry.
+            if (CloudFiles.IsPlaceholder(file))
+                progress?.Report($"Lade {name} aus der Cloud …");
+            CloudFiles.Hydrate(file, ct: ct);
+
             if (Path.GetExtension(file).Equals(".mp3", StringComparison.OrdinalIgnoreCase))
             {
-                progress?.Report($"Recode: {name}");
-                await EncodeAsync(file, target, ct);
+                if (reencode)
+                {
+                    progress?.Report($"Recode: {name}");
+                    await EncodeAsync(file, target, ct);
+                }
+                else
+                {
+                    progress?.Report($"Übernehme: {name}");
+                    CloudFiles.Copy(file, target, ct);
+                }
+
                 encodedMp3s.Add(target);
             }
             else
             {
-                File.Copy(file, target, overwrite: true);
+                CloudFiles.Copy(file, target, ct);
             }
         }
 

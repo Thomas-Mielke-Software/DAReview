@@ -92,6 +92,28 @@ public class AirplayIntegrationTests : IDisposable
     }
 
     [Fact]
+    public void Approve_all_takes_the_undecided_tracks_and_keeps_rejections()
+    {
+        CreateAlbum("Test Album", 3);
+        var store = new ReviewStore();
+        var album = new AlbumLibrary().LoadReviewQueue(_reviewDir).Single();
+
+        store.SetDecision(album, album.Tracks[1], TrackDecision.Rejected); // 2
+
+        Assert.Equal(2, store.ApproveUndecided(album));
+        Assert.True(album.AllTracksDecided);
+        Assert.Equal(new[] { 1, 3 }, album.ApprovedTracks.Select(t => t.TrackNumber));
+        Assert.Equal(new[] { 2 }, album.RejectedTracks.Select(t => t.TrackNumber));
+
+        Assert.Equal(0, store.ApproveUndecided(album)); // idempotent
+
+        // Reload from disk to confirm persistence.
+        var reloaded = new AlbumLibrary().LoadReviewQueue(_reviewDir).Single();
+        Assert.Equal(new[] { 1, 3 }, reloaded.ApprovedTracks.Select(t => t.TrackNumber));
+        Assert.Equal(new[] { 2 }, reloaded.RejectedTracks.Select(t => t.TrackNumber));
+    }
+
+    [Fact]
     public void Published_albums_are_excluded_from_the_queue()
     {
         CreateAlbum("Test Album", 2);

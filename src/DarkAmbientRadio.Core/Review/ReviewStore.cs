@@ -16,6 +16,26 @@ public sealed class ReviewStore
         album.State.Save(album.FolderPath);
     }
 
+    /// <summary>
+    /// Approves every track that has no decision yet, leaving explicit rejections untouched,
+    /// and persists the sidecar once. Returns how many tracks were approved.
+    /// </summary>
+    public int ApproveUndecided(Album album)
+    {
+        var approved = 0;
+        foreach (var track in album.Tracks.Where(t => t.Decision == TrackDecision.Undecided))
+        {
+            track.Decision = TrackDecision.Approved;
+            album.State.Decisions[track.TrackNumber] = TrackDecision.Approved;
+            approved++;
+        }
+
+        if (approved > 0)
+            album.State.Save(album.FolderPath);
+
+        return approved;
+    }
+
     /// <summary>Increments the completed-track-play counter (called when a track ends).</summary>
     public void RecordTrackPlayed(Album album)
     {

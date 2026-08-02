@@ -59,11 +59,40 @@ these (or credentials) sneak in.
   Taking the number after the *last* separator was a bug — such albums parsed to **zero tracks** and
   were silently dropped by `LoadReviewQueue`, invisible in the UI even after a restart.
   `TrackNumberParser` just delegates here; keep the two in sync.
-- **Drag & drop onto the album list** takes ZIPs *and* album folders. ZIPs run the full pipeline
-  (unpack → archive → re-encode → review); **folders are only relocated into the review dir, not
-  re-encoded** — so a dropped 320k folder stays 320k. `FolderImporter` prefers `Directory.Move`
+- **Drag & drop onto the album list** takes ZIPs *and* album folders, and **both run the full
+  pipeline**: archive → re-encode → normalise → review (`AcquisitionWorkflow.ProcessZipAsync` /
+  `ProcessFolderAsync`). A dropped folder is therefore first moved into the *archive* as the
+  untouched master, not into the review dir. Folders **already inside the archive** stay put and
+  only get their review copy rebuilt; folders inside the *review* dir are refused (a failed
+  re-encode would otherwise leave them half-archived). `FolderImporter` prefers `Directory.Move`
   and only copies across volumes; it never deletes the source itself but reports it back so
   `MainViewModel` can ask first (default "no").
+  Until 2026-08-02 folder drops were only relocated into the review dir and skipped both steps —
+  that is where the 320k, un-normalised albums in the review queue came from.
+- **Skipping a pointless re-encode**: before a folder drop is processed, `Mp3StreamProbe` checks
+  whether the album *already* is CBR at the target bitrate; only then does the user get asked
+  whether to skip the encode (normalisation runs either way — `ProcessAlbumAsync(reencode: false)`
+  copies instead of calling ffmpeg, then still runs mp3gain). The check walks **every MPEG frame
+  header** and compares the bitrate field, because an *average* bitrate cannot tell CBR from VBR:
+  LAME ABR at 192 and V2 both average around the target and are not CBR. Verified against real
+  ffmpeg output (CBR 192/320 → yes, `-q:a 2` and `-b:a 192k -abr 1` → no). The Xing/Info/VBRI
+  frame is excluded from the comparison, or every tagged CBR file would look variable.
+- **Nextcloud placeholders break the pipeline.** Files in a synced folder can be dehydrated
+  (`Offline | RecallOnDataAccess`) — in practice it is always `cover.jpg`, because nothing ever
+  opens it while the MP3s get played. `File.Copy` and ffmpeg then die with *"Der Cloudvorgang war
+  nicht erfolgreich"*. `CloudFiles` hydrates by **setting `FILE_ATTRIBUTE_PINNED` (0x80000) and
+  waiting** for the flags to clear, then restoring the previous pin state. Do *not* "just read the
+  first byte" to force hydration: that is an app-triggered automatic download, and after a few of
+  them **Windows blocks the app** (Einstellungen → Datenschutz und Sicherheit → Automatische
+  Dateidownloads), after which every further read fails instantly. A retry loop is the fastest way
+  into that block. Measured on real covers, a pinned fetch took **18–51 s** — budget minutes, not
+  a retry with a 500 ms backoff.
+- **Hydrate before moving, not after.** `ProcessFolderAsync` calls `CloudFiles.HydrateFolder` on
+  the dropped folder *before* `FolderImporter` moves it into the archive: once a placeholder has
+  moved to a new path inside the sync root, the client must replay that move on the server before
+  it can serve the content at all.
+- A drop of several albums isolates failures per item — one bad album used to abort the whole
+  batch, which is why two albums silently never got processed.
 - **Normalisation buttons ("Aa Artist" / "Aa Album")** fix *capitalisation only*, across folder name,
   track filenames **and** ID3 tags (`AlbumNormalizer`). `TitleCaseNormalizer` deliberately skips
   already-mixed-case words ("McCoy", "DiN") and roman numerals, and keeps minor words ("of", "the")

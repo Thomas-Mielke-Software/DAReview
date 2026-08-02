@@ -12,38 +12,35 @@ public readonly record struct FolderImportResult(string TargetPath, string? Sour
 }
 
 /// <summary>
-/// Takes an existing album folder into the review queue. Prefers a move (instant, leaves
-/// nothing behind); only when source and destination sit on different volumes does it fall
-/// back to a recursive copy, and then it reports the source back rather than deleting it
+/// Takes an existing album folder to where the pipeline expects it. Prefers a move (instant,
+/// leaves nothing behind); only when source and destination sit on different volumes does it
+/// fall back to a recursive copy, and then it reports the source back rather than deleting it
 /// itself — removing the user's original is never this class's decision.
 /// </summary>
 public sealed class FolderImporter
 {
     public FolderImportResult Import(
         string sourceFolder,
-        string reviewDir,
+        string destinationDir,
         IProgress<string>? progress = null,
         CancellationToken ct = default)
     {
         sourceFolder = Path.TrimEndingDirectorySeparator(Path.GetFullPath(sourceFolder));
-        reviewDir = Path.TrimEndingDirectorySeparator(Path.GetFullPath(reviewDir));
+        destinationDir = Path.TrimEndingDirectorySeparator(Path.GetFullPath(destinationDir));
 
         if (!Directory.Exists(sourceFolder))
             throw new DirectoryNotFoundException($"Ordner nicht gefunden: {sourceFolder}");
 
         var name = Path.GetFileName(sourceFolder);
-        var target = Path.Combine(reviewDir, name);
+        var target = Path.Combine(destinationDir, name);
 
-        if (string.Equals(sourceFolder, target, StringComparison.OrdinalIgnoreCase))
-            throw new IOException($"»{name}« liegt bereits im Review-Ordner.");
-
-        if (IsInside(reviewDir, sourceFolder))
-            throw new IOException($"»{name}« liegt bereits unterhalb des Review-Ordners.");
+        if (IsAtOrUnder(destinationDir, sourceFolder))
+            throw new IOException($"»{name}« liegt bereits unterhalb von {destinationDir}.");
 
         if (Directory.Exists(target))
-            throw new IOException($"Im Review-Ordner gibt es bereits »{name}«.");
+            throw new IOException($"In {destinationDir} gibt es bereits »{name}«.");
 
-        Directory.CreateDirectory(reviewDir);
+        Directory.CreateDirectory(destinationDir);
 
         try
         {
@@ -62,9 +59,18 @@ public sealed class FolderImporter
         return new FolderImportResult(target, SourceToRemove: sourceFolder);
     }
 
-    /// <summary>True when <paramref name="path"/> is <paramref name="root"/> or lives under it.</summary>
-    private static bool IsInside(string root, string path)
-        => path.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+    /// <summary>True when <paramref name="path"/> is <paramref name="root"/> itself or lives under it.</summary>
+    public static bool IsAtOrUnder(string root, string path)
+    {
+        if (string.IsNullOrWhiteSpace(root) || string.IsNullOrWhiteSpace(path))
+            return false;
+
+        root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        path = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+
+        return string.Equals(root, path, StringComparison.OrdinalIgnoreCase)
+            || path.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+    }
 
     private static void CopyDirectory(string source, string target, CancellationToken ct)
     {

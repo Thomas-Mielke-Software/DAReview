@@ -7,6 +7,7 @@ using CommunityToolkit.Mvvm.Input;
 using DarkAmbientRadio.App.Services;
 using DarkAmbientRadio.App.Views;
 using DarkAmbientRadio.Core.Airplay;
+using DarkAmbientRadio.Core.Audio;
 using DarkAmbientRadio.Core.Config;
 using DarkAmbientRadio.Core.Files;
 using DarkAmbientRadio.Core.Library;
@@ -29,6 +30,7 @@ public partial class MainViewModel : ObservableObject
     private TaskCompletionSource? _loginGate;
     private CancellationTokenSource? _prefetchCts;
     private int _currentTrackIndex;
+    private int _trackInfoToken;
 
     /// <summary>Raised with a file path when the view should start playing a track.</summary>
     public event Action<string>? PlayFileRequested;
@@ -61,6 +63,13 @@ public partial class MainViewModel : ObservableObject
 
     [ObservableProperty]
     private bool _showContinueButton;
+
+    /// <summary>ID3/stream facts of the playing track, shown between player and track list.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasTrackInfo))]
+    private TrackInfoViewModel? _trackInfo;
+
+    public bool HasTrackInfo => TrackInfo is not null;
 
     // ----- Album loading -----------------------------------------------------
 
@@ -121,6 +130,7 @@ public partial class MainViewModel : ObservableObject
             // track's Source replaces the old one (avoids a stop/play race that could
             // swallow the auto-play of the first track).
             StopRequested?.Invoke();
+            ClearTrackInfo();
             NotifyAlbumCommandsChanged();
             return;
         }
@@ -203,6 +213,40 @@ public partial class MainViewModel : ObservableObject
         var track = album.Tracks[_currentTrackIndex];
         track.IsPlaying = true;
         PlayFileRequested?.Invoke(track.FilePath);
+        LoadTrackInfo(track.FilePath);
+    }
+
+    /// <summary>
+    /// Reads the tags off the UI thread — on a cold Nextcloud file that read can block for a
+    /// moment, and it must not delay playback. A stale result (the user moved on meanwhile)
+    /// is dropped via the token.
+    /// </summary>
+    private async void LoadTrackInfo(string filePath)
+    {
+        var token = ++_trackInfoToken;
+        TrackInfo = null;
+
+        var metadata = await Task.Run(() => TrackMetadata.Read(filePath));
+        if (token == _trackInfoToken)
+            TrackInfo = new TrackInfoViewModel(metadata, filePath, ExpectedBitrate);
+    }
+
+    private void ClearTrackInfo()
+    {
+        _trackInfoToken++;   // invalidates a read that is still running
+        TrackInfo = null;
+    }
+
+    /// <summary>The configured target bitrate in kbit/s (<c>"192k"</c> → 192), 0 if unparsable.</summary>
+    private int ExpectedBitrate
+    {
+        get
+        {
+            var digits = new string(_config.Bitrate?.TakeWhile(char.IsAsciiDigit).ToArray() ?? []);
+            if (!int.TryParse(digits, out var value) || value <= 0)
+                return 0;
+            return value >= 1000 ? value / 1000 : value;   // accept "192000" as well as "192k"
+        }
     }
 
     /// <summary>Called by the view when the current track finishes.</summary>
@@ -223,6 +267,7 @@ public partial class MainViewModel : ObservableObject
         {
             ClearPlayingFlags(album);
             StopRequested?.Invoke();
+            ClearTrackInfo();
             StatusText = $"Album durchgehört ({album.ListenPercentText}).";
         }
     }
@@ -293,9 +338,9 @@ public partial class MainViewModel : ObservableObject
 
     /// <summary>
     /// Imports what was dropped onto the album list and starts playing the result (the first
-    /// item, if several were dropped at once). ZIPs run through the full pipeline
-    /// (unpack → archive → re-encode → review); album <em>folders</em> are taken as they are
-    /// and only relocated into the review directory.
+    /// item, if several were dropped at once). Both ZIPs and album folders run through the
+    /// full pipeline (archive → re-encode → normalise → review), so nothing reaches the
+    /// review queue at the wrong bitrate or without normalisation.
     /// </summary>
     public async Task ImportDroppedAsync(IReadOnlyList<string> paths)
     {
@@ -316,35 +361,104 @@ public partial class MainViewModel : ObservableObject
         IsBusy = true;
         var progress = new Progress<string>(msg => StatusText = msg);
         var imported = new List<string>();
+        var failures = new List<string>();
         try
         {
             var workflow = new AcquisitionWorkflow(_config);
-            foreach (var zip in zips)
-                imported.Add(await Task.Run(() => workflow.ProcessZipAsync(zip, progress, CancellationToken.None)));
 
-            var importer = new FolderImporter();
+            // Each item stands on its own: one album that fails must not take the rest of the
+            // drop with it (a single stumbling cloud fetch used to abort the whole batch).
+            foreach (var zip in zips)
+            {
+                try
+                {
+                    imported.Add(await Task.Run(() => workflow.ProcessZipAsync(zip, progress, CancellationToken.None)));
+                }
+                catch (Exception ex)
+                {
+                    failures.Add($"{Path.GetFileName(zip)}: {ex.Message}");
+                }
+            }
+
             foreach (var folder in folders)
             {
-                var result = await Task.Run(
-                    () => importer.Import(folder, _config.ReviewDir, progress, CancellationToken.None));
-                imported.Add(result.TargetPath);
+                try
+                {
+                    var reencode = await ConfirmReencodeAsync(folder);
+                    var result = await Task.Run(
+                        () => workflow.ProcessFolderAsync(folder, reencode, progress, CancellationToken.None));
+                    imported.Add(result.TargetPath);
 
-                if (result.SourceToRemove is { } leftover)
-                    await ConfirmAndDeleteSourceAsync(leftover);
+                    if (result.SourceToRemove is { } leftover)
+                        await ConfirmAndDeleteSourceAsync(leftover);
+                }
+                catch (Exception ex)
+                {
+                    failures.Add($"{Path.GetFileName(Path.TrimEndingDirectorySeparator(folder))}: {ex.Message}");
+                }
             }
 
             LoadAlbums();
-            SelectAlbumByFolder(imported[0]);   // start reviewing the new album right away
-            StatusText = imported.Count == 1 ? "Import fertig." : $"{imported.Count} Alben importiert.";
-        }
-        catch (Exception ex)
-        {
-            StatusText = $"Import-Fehler: {ex.Message}";
+            if (imported.Count > 0)
+                SelectAlbumByFolder(imported[0]);   // start reviewing the new album right away
+
+            ReportImportOutcome(imported.Count, failures);
         }
         finally
         {
             IsBusy = false;
         }
+    }
+
+    private void ReportImportOutcome(int importedCount, IReadOnlyList<string> failures)
+    {
+        if (failures.Count == 0)
+        {
+            StatusText = importedCount == 1 ? "Import fertig." : $"{importedCount} Alben importiert.";
+            return;
+        }
+
+        StatusText = importedCount > 0
+            ? $"{importedCount} importiert, {failures.Count} fehlgeschlagen."
+            : $"Import fehlgeschlagen ({failures.Count}).";
+
+        // The status line truncates and these are the details that matter for a retry.
+        MessageBox.Show(
+            string.Join("\n\n", failures),
+            failures.Count == 1 ? "Import fehlgeschlagen" : $"{failures.Count} Importe fehlgeschlagen",
+            MessageBoxButton.OK,
+            MessageBoxImage.Warning);
+    }
+
+    /// <summary>
+    /// Asks before re-encoding an album that already is exactly what the pipeline would produce.
+    /// MP3 is lossy, so a second pass costs quality for nothing. The check reads the MPEG frame
+    /// headers rather than an average bitrate — a VBR file can average the target exactly and
+    /// still be a different animal; anything not provably CBR at the target is re-encoded.
+    /// </summary>
+    private async Task<bool> ConfirmReencodeAsync(string folder)
+    {
+        var target = ExpectedBitrate;
+        if (target <= 0)
+            return true;
+
+        StatusText = $"Prüfe Bitrate von {Path.GetFileName(Path.TrimEndingDirectorySeparator(folder))} …";
+        var info = await Task.Run(() => Mp3StreamProbe.ProbeAlbum(folder));
+        if (!info.IsConstantAt(target))
+            return true;
+
+        var answer = MessageBox.Show(
+            $"»{Path.GetFileName(Path.TrimEndingDirectorySeparator(folder))}« liegt bereits "
+            + $"vollständig in {target} kbit/s CBR vor ({info.TrackCount} Tracks).\n\n"
+            + "Ein erneutes Encodieren würde die Qualität verschlechtern, ohne etwas zu ändern.\n\n"
+            + "Recode überspringen und die Dateien unverändert übernehmen?\n\n"
+            + $"Die Normalisierung auf {_config.NormalizationDb:0.#} dB läuft in beiden Fällen.",
+            "Album ist bereits im Zielformat",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Information,
+            MessageBoxResult.Yes);
+
+        return answer != MessageBoxResult.Yes;
     }
 
     /// <summary>
@@ -418,8 +532,59 @@ public partial class MainViewModel : ObservableObject
     private void NotifyAlbumCommandsChanged()
     {
         PublishCommand.NotifyCanExecuteChanged();
+        RejectAlbumCommand.NotifyCanExecuteChanged();
         NormalizeAlbumTitleCommand.NotifyCanExecuteChanged();
         NormalizeArtistCommand.NotifyCanExecuteChanged();
+    }
+
+    // ----- Reject ------------------------------------------------------------
+
+    /// <summary>
+    /// The counterpart to publishing: throw the album out of the review queue by deleting its
+    /// folder, optionally together with the archived 320k master.
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(HasSelectedAlbum))]
+    private void RejectAlbum()
+    {
+        var album = SelectedAlbum;
+        if (album is null)
+            return;
+
+        var reviewFolder = album.Album.FolderPath;
+        var archiveFolder = AlbumRemover.FindArchiveFolder(reviewFolder, _config.ArchiveDir);
+
+        var dialog = new DeleteAlbumWindow(album.Name, reviewFolder, archiveFolder)
+        {
+            Owner = Application.Current.MainWindow,
+        };
+        if (dialog.ShowDialog() != true)
+            return;
+
+        var alsoArchive = dialog.AlsoDeleteArchive && archiveFolder is not null;
+
+        // Every open handle has to go first — the player holds the current track and a
+        // Nextcloud prefetch may still be streaming the rest.
+        StopRequested?.Invoke();
+        ClearTrackInfo();
+        CancelPrefetch();
+
+        try
+        {
+            var remover = new AlbumRemover();
+            RetryWhileLocked(() => remover.Delete(reviewFolder));
+            if (alsoArchive)
+                remover.Delete(archiveFolder!);
+
+            Albums.Remove(album);
+            SelectedAlbum = null;
+            StatusText = alsoArchive
+                ? $"Abgelehnt: {album.Name} – Review und Archiv im Papierkorb."
+                : $"Abgelehnt: {album.Name} – Review-Ordner im Papierkorb.";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Löschen fehlgeschlagen: {ex.Message}";
+        }
     }
 
     // ----- Normalisation -----------------------------------------------------
@@ -447,6 +612,7 @@ public partial class MainViewModel : ObservableObject
         // Every open handle on these files has to go before renaming: the player holds the
         // current track, and a Nextcloud prefetch may still be streaming several more.
         StopRequested?.Invoke();
+        ClearTrackInfo();
         CancelPrefetch();
 
         IsBusy = true;
@@ -476,6 +642,9 @@ public partial class MainViewModel : ObservableObject
     /// first rename attempt can still hit a lock. Retrying is safe because normalisation is
     /// idempotent — already-correct names and tags are simply left untouched.
     /// </summary>
+    private static void RetryWhileLocked(Action action, int attempts = 5)
+        => RetryWhileLocked<object?>(() => { action(); return null; }, attempts);
+
     private static T RetryWhileLocked<T>(Func<T> action, int attempts = 5)
     {
         for (var attempt = 1; ; attempt++)
