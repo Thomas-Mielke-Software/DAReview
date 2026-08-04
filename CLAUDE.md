@@ -58,7 +58,24 @@ these (or credentials) sneak in.
   everything before the hit = album, the hit and everything after = `NumberedTitle`.
   Taking the number after the *last* separator was a bug — such albums parsed to **zero tracks** and
   were silently dropped by `LoadReviewQueue`, invisible in the UI even after a restart.
-  `TrackNumberParser` just delegates here; keep the two in sync.
+  This schema is what the **renaming** (`AlbumNormalizer`) works on; it is **not** a precondition for
+  reviewing — see the next point.
+- **Track numbers are derived, not demanded** (`TrackNumbering.Assign`, since 2026-08-04). Only three
+  things need a number at all — sort order, the decision keys in `.review.json` and the
+  `[OHNE TRACK 2 und 3]` suffix — so an album folder is numbered by a cascade: filename
+  (`TrackNumberParser`: Bandcamp schema, else a leading `^\d{1,3}(?!\d)[\s._-]` — the lookahead keeps
+  `2001 - …` from yielding 200) → **ID3 track frame** → **position in the folder** (ordinal by
+  filename). Numbers that were found keep their claim, gaps included; collisions and unnumbered files
+  fill the lowest free numbers, so the result is unique and deterministic for a given file set.
+  Before this, `TrackItem.FromFile` returned null for anything off-schema and `LoadReviewQueue`
+  dropped the album without a word: a hand-dropped scene release (`01_massacre_divino_-_agarez.mp3`,
+  no " - " anywhere) was correctly re-encoded and normalised but never appeared in the list.
+  `LoadReviewQueue` now only skips folders with **no MP3 at all**.
+  The ID3 step **must not touch cloud placeholders** (`CloudFiles.IsPlaceholder` guard): the list is
+  rescanned on every refresh, and app-triggered on-demand downloads are what get the app blocked.
+  Positional numbers are only stable while the file set is — adding a file later shifts the decision
+  keys of everything after it. Keying decisions by filename would fix that but needs a sidecar
+  migration.
 - **Drag & drop onto the album list** takes ZIPs *and* album folders, and **both run the full
   pipeline**: archive → re-encode → normalise → review (`AcquisitionWorkflow.ProcessZipAsync` /
   `ProcessFolderAsync`). A dropped folder is therefore first moved into the *archive* as the

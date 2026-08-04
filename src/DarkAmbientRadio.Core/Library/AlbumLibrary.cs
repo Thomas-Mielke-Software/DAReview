@@ -1,4 +1,5 @@
 using DarkAmbientRadio.Core.Models;
+using DarkAmbientRadio.Core.Naming;
 
 namespace DarkAmbientRadio.Core.Library;
 
@@ -7,7 +8,8 @@ public sealed class AlbumLibrary
 {
     /// <summary>
     /// Loads all reviewable albums from <paramref name="reviewDir"/>. Folders whose name
-    /// starts with "!" (e.g. "!Free") and albums with no numbered tracks are skipped.
+    /// starts with "!" (e.g. "!Free") and folders without a single MP3 are skipped — how the
+    /// MP3s are named is <em>not</em> a criterion, see <see cref="TrackNumbering"/>.
     /// Already-published albums are excluded unless <paramref name="includePublished"/> is set.
     /// </summary>
     public IReadOnlyList<Album> LoadReviewQueue(string reviewDir, bool includePublished = false)
@@ -26,10 +28,8 @@ public sealed class AlbumLibrary
             if (state.Published && !includePublished)
                 continue;
 
-            var tracks = Directory.EnumerateFiles(dir, "*.mp3")
-                .Select(TrackItem.FromFile)
-                .Where(t => t is not null)
-                .Select(t => t!)
+            var tracks = TrackNumbering.Assign(Directory.EnumerateFiles(dir, "*.mp3"))
+                .Select(TrackItem.FromNumberedFile)
                 .OrderBy(t => t.TrackNumber)
                 .ToList();
 
