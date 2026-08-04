@@ -94,6 +94,22 @@ these (or credentials) sneak in.
   LAME ABR at 192 and V2 both average around the target and are not CBR. Verified against real
   ffmpeg output (CBR 192/320 → yes, `-q:a 2` and `-b:a 192k -abr 1` → no). The Xing/Info/VBRI
   frame is excluded from the comparison, or every tagged CBR file would look variable.
+- **Both pipeline phases run in parallel** (`AudioProcessor.ProcessAlbumAsync`, since 2026-08-04),
+  and they want **different degrees** — measured on an 11-track album, Ryzen 7 4800U (8C/16T, 15 W):
+  - *Re-encode* — `Clamp(ProcessorCount / 2, 1, 8)`, i.e. the physical core count. 1 → 64 s,
+    2 → 39 s, 4 → 25 s, 8 → 21 s, 16 → 20 s. `/2` because `ProcessorCount` counts SMT threads and
+    LAME gains almost nothing from them; past the physical cores the package power limit throttles
+    the clocks and the last 8 threads buy 5 %.
+  - *Normalisation* — `Clamp(ProcessorCount, 1, 16)`, **one mp3gain process per track**, not one
+    call with the whole list. 1 → 32 s, 2 → 18 s, 4 → 11 s, 8 → 8 s, 16 → 6.5 s: analysis keeps
+    scaling where LAME stopped, the processes being short-lived and partly waiting on file reads.
+    Per-track is equivalent because the gain is per file — `/r` is *track* gain (album gain, `/a`,
+    really would need every track at once) and `/k` caps clipping per file too. Verified: the
+    applied gains match the single-call run exactly. Per track also self-balances, which chunking
+    the list into equal parts would not, since track lengths differ.
+
+  Together 94 s → 28 s for that album. Encode results go into an **index-aligned array**, not a
+  shared list, so the track order survives whatever finishes first.
 - **Nextcloud placeholders break the pipeline.** Files in a synced folder can be dehydrated
   (`Offline | RecallOnDataAccess`) — in practice it is always `cover.jpg`, because nothing ever
   opens it while the MP3s get played. `File.Copy` and ffmpeg then die with *"Der Cloudvorgang war
