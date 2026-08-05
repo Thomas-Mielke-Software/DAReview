@@ -507,7 +507,7 @@ public partial class MainViewModel : ObservableObject
         if (sections.Count == 0)
             return;
 
-        MessageBox.Show(
+        Show(
             string.Join("\n\n", sections),
             report.Failures.Count == 0 ? "Import abgeschlossen" : "Import mit Fehlern",
             MessageBoxButton.OK,
@@ -515,6 +515,24 @@ public partial class MainViewModel : ObservableObject
 
         static string Section(string heading, IEnumerable<string> items)
             => heading + "\n" + string.Join("\n", items.Select(item => "• " + item));
+    }
+
+    /// <summary>
+    /// A message box owned by the main window, which is what keeps it in front of it. Without an
+    /// owner the box is a top-level window of its own: a click on the main window puts it behind,
+    /// and since it is modal, the app then sits there frozen with the dialog nowhere in sight.
+    /// </summary>
+    private static MessageBoxResult Show(
+        string text,
+        string caption,
+        MessageBoxButton buttons,
+        MessageBoxImage icon,
+        MessageBoxResult defaultResult = MessageBoxResult.None)
+    {
+        var owner = Application.Current?.MainWindow;
+        return owner is null
+            ? MessageBox.Show(text, caption, buttons, icon, defaultResult)
+            : MessageBox.Show(owner, text, caption, buttons, icon, defaultResult);
     }
 
     /// <summary>
@@ -563,7 +581,7 @@ public partial class MainViewModel : ObservableObject
     /// </summary>
     private async Task ConfirmAndDeleteSourceAsync(string source)
     {
-        var answer = MessageBox.Show(
+        var answer = Show(
             $"»{Path.GetFileName(source)}« liegt auf einem anderen Laufwerk und wurde deshalb "
             + "kopiert statt verschoben.\n\nSoll der Ursprungsordner jetzt gelöscht werden?\n\n"
             + source,
