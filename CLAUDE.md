@@ -106,6 +106,14 @@ these (or credentials) sneak in.
   LAME ABR at 192 and V2 both average around the target and are not CBR. Verified against real
   ffmpeg output (CBR 192/320 → yes, `-q:a 2` and `-b:a 192k -abr 1` → no). The Xing/Info/VBRI
   frame is excluded from the comparison, or every tagged CBR file would look variable.
+- **A reload keeps the selection** (`MainViewModel.LoadAlbums(selectFolder)`, since 2026-08-05).
+  `Albums.Clear()` makes the ListBox write `null` back into `SelectedAlbum`, and everything whose
+  `CanExecute` hangs off it — Airplay, Ablehnen, both normalisation buttons — goes grey in front of
+  a full list. Before this, "↻ Review neu einlesen" and an import in which *every* item failed left
+  exactly that: the buttons look permanently broken until the user clicks an album. The restore is
+  quiet (`autoPlay: false`), because putting the selection back is not a reason to restart the
+  album or to hydrate it again; only a caller that passes a folder — a finished import, a
+  normalisation rename — gets the auto-play.
 - **One summary dialog per drop** (`MainViewModel.ReportImportOutcome`): failures (album + the
   exception's message), low-bitrate sources and skipped re-encodes go into a single MessageBox at
   the *end* of the batch — a clean import shows none at all. Per-album questions during the run are
@@ -116,13 +124,24 @@ these (or credentials) sneak in.
   `# Alben enthalten Tracks < 160 kbit/s: Album (128), …` to the status line — the number in
   brackets is the album's **worst** track. Measured on the **archive
   master**, not on the review copy — the encode lifts everything to 192, so afterwards nothing can
-  still tell that the source was 128. Deliberately *not* `Mp3StreamProbe`: this is a warning, not a
-  decision, so `TrackMetadata.FindTracksBelow` uses TagLib's cheap estimate (first header + file
-  length, or the Xing frame count) instead of walking every frame — same number the player panel
-  shows. Runs *after* `ProcessAlbumAsync`, when the pipeline has hydrated every track anyway, and
-  skips cloud placeholders; a bitrate of 0 means "unreadable" and is never reported as "too low".
-  `Mp3StreamProbe.Probe` skips placeholders for the same reason (reading one is an app-triggered
-  download) — `ConfirmReencodeAsync` probes a dropped folder *before* it gets hydrated.
+  still tell that the source was 128. It is a warning, not a decision, so
+  `Mp3StreamProbe.FindTracksBelow` does **not** walk the file: it syncs to the first real frame and
+  takes the Xing/VBRI frame count when there is one (the only way to average a VBR file), otherwise
+  that frame's bitrate, which is exact for CBR. Runs *after* `ProcessAlbumAsync`, when the pipeline
+  has hydrated every track anyway; `Probe`/`ProbeAverageBitrate` skip cloud placeholders (reading
+  one is an app-triggered download), and a null answer is never reported as "too low".
+  **Do not use TagLib's `AudioBitrate` for this** — that was the first version and it lied: see the
+  next point.
+- **A sync is only real if frames follow it** (`Mp3StreamProbe.StartsFrameChain`, since 2026-08-05).
+  The padding between an ID3v2 tag and the first audio frame regularly contains four bytes that
+  parse as a valid header. Believing them is what TagLib does, and on 1990s scene rips
+  (`caul - reliquary`) it reported **8 kbit/s and 1:45 h** for a 128 kbit/s CBR track, because
+  without a Xing frame it derives the playing time from that bogus bitrate — every album of such a
+  rip was warned about with a random number, and one 192 CBR album was flagged at "32". A position
+  now counts as the stream start only if `ChainedFrames` (3) headers follow each other, each
+  exactly `Length` bytes on. This also fixed `Probe` returning "don't know" on those files, so the
+  re-encode skip works for them too. `TrackMetadata.Bitrate` (the player info strip) is still
+  TagLib's number and still wrong on such files.
 - **Both pipeline phases run in parallel** (`AudioProcessor.ProcessAlbumAsync`, since 2026-08-04),
   and they want **different degrees** — measured on an 11-track album, Ryzen 7 4800U (8C/16T, 15 W):
   - *Re-encode* — `Clamp(ProcessorCount / 2, 1, 8)`, i.e. the physical core count. 1 → 64 s,

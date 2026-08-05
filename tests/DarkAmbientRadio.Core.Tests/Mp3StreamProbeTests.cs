@@ -157,6 +157,67 @@ public class Mp3StreamProbeTests : IDisposable
         Assert.False(Mp3StreamProbe.ProbeAlbum(album).IsConstantAt(192));
     }
 
+    // The real-world case this whole chain check exists for: an old rip whose ID3v2 tag ends
+    // before the audio does, with four bytes of padding in between that read as an 8 kbit/s
+    // header. Believing them turns a 128 kbit/s file into "8 kbit/s" and a 1:45 h playing time.
+    [Fact]
+    public void A_false_sync_in_the_padding_is_not_mistaken_for_the_stream()
+    {
+        var path = Write("padded.mp3", Concat(
+            Mp3Frames.Id3v2(200),
+            Mp3Frames.FalseSync(),
+            new byte[300],
+            Frames(128, 128, 128, 128, 128, 128)));
+
+        var info = Mp3StreamProbe.Probe(path);
+
+        Assert.True(info!.Value.IsConstant);
+        Assert.Equal(128, info.Value.Bitrate);
+        Assert.Equal(6, info.Value.FrameCount);
+        Assert.Equal(128, Mp3StreamProbe.ProbeAverageBitrate(path));
+    }
+
+    [Fact]
+    public void The_average_bitrate_of_a_constant_file_is_that_bitrate()
+    {
+        Assert.Equal(192, Mp3StreamProbe.ProbeAverageBitrate(Write("cbr.mp3", Frames(192, 192, 192, 192))));
+        Assert.Null(Mp3StreamProbe.ProbeAverageBitrate(Write("text.mp3", Encoding.ASCII.GetBytes(new string('x', 5000)))));
+        Assert.Null(Mp3StreamProbe.ProbeAverageBitrate(Path.Combine(_root, "missing.mp3")));
+    }
+
+    [Fact]
+    public void A_xing_frame_count_gives_the_average_of_a_variable_file()
+    {
+        // 100 frames at 44.1 kHz = 2.612 s. The file is the Xing frame plus 8 audio frames of
+        // wildly different sizes, so only the count in the tag can produce a sane answer.
+        var xingFrame = Frames(32);
+        Encoding.ASCII.GetBytes("Xing").CopyTo(xingFrame, 4 + 32);
+        xingFrame[4 + 32 + 7] = 0x01;                                  // flags: frame count present
+        BitConverter.GetBytes(100).Reverse().ToArray().CopyTo(xingFrame, 4 + 32 + 8);
+
+        var audio = Frames(320, 128, 320, 128, 320, 128, 320, 128);
+        var path = Write("vbr.mp3", Concat(xingFrame, audio));
+        var expected = (int)Math.Round(
+            new FileInfo(path).Length * 8 / (100 * 1152.0 / 44100) / 1000);
+
+        Assert.Equal(expected, Mp3StreamProbe.ProbeAverageBitrate(path));
+    }
+
+    [Fact]
+    public void Tracks_below_the_threshold_are_named_with_their_bitrate()
+    {
+        var album = Directory.CreateDirectory(Path.Combine(_root, "poor")).FullName;
+        File.WriteAllBytes(Path.Combine(album, "01.mp3"), Frames(192, 192, 192, 192));
+        File.WriteAllBytes(Path.Combine(album, "02.mp3"), Frames(128, 128, 128, 128));
+        File.WriteAllBytes(Path.Combine(album, "03.mp3"), Frames(160, 160, 160, 160));   // at it: fine
+        File.WriteAllText(Path.Combine(album, "04.mp3"), "not audio");                   // unknown, not low
+
+        Assert.Equal(
+            [new TrackBitrate("02.mp3", 128)],
+            Mp3StreamProbe.FindTracksBelow(album, 160));
+        Assert.Empty(Mp3StreamProbe.FindTracksBelow(Path.Combine(_root, "gone"), 160));
+    }
+
     [Fact]
     public void An_unreadable_track_keeps_the_album_from_counting_as_constant()
     {

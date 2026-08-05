@@ -36,4 +36,29 @@ internal static class Mp3Frames
     /// <summary>The same, repeated — enough audio for a reader that judges by file length.</summary>
     public static byte[] Track(int kbps, int frames)
         => At(Enumerable.Repeat(kbps, frames).ToArray());
+
+    /// <summary>
+    /// Four bytes that parse as a perfectly valid frame header (MPEG 2, 8 kbit/s, 16 kHz) but are
+    /// not followed by a frame — the kind of accident that sits in the padding between an ID3v2
+    /// tag and the real audio of an old rip, and that a reader must not mistake for the stream.
+    /// </summary>
+    public static byte[] FalseSync()
+        => [0xFF, 0xF3, 0x18, 0x00];
+
+    /// <summary>An ID3v2.3 tag of <paramref name="payload"/> bytes, all zero.</summary>
+    public static byte[] Id3v2(int payload)
+    {
+        var tag = new byte[10 + payload];
+        tag[0] = (byte)'I';
+        tag[1] = (byte)'D';
+        tag[2] = (byte)'3';
+        tag[3] = 3;
+
+        // Syncsafe size: seven bits per byte.
+        tag[6] = (byte)((payload >> 21) & 0x7F);
+        tag[7] = (byte)((payload >> 14) & 0x7F);
+        tag[8] = (byte)((payload >> 7) & 0x7F);
+        tag[9] = (byte)(payload & 0x7F);
+        return tag;
+    }
 }

@@ -126,7 +126,7 @@ public sealed class AcquisitionWorkflow
         // only the source can still say that the material was poor. Probing afterwards also means
         // the pipeline has already pulled every track out of the cloud.
         var lowBitrate = await Task.Run(
-            () => TrackMetadata.FindTracksBelow(archiveFolder, LowBitrateThresholdKbps), ct);
+            () => Mp3StreamProbe.FindTracksBelow(archiveFolder, LowBitrateThresholdKbps), ct);
 
         progress.Report("Fertig – Album ist im Review.");
         return new AlbumImportResult(reviewFolder, SourceToRemove: null, lowBitrate);

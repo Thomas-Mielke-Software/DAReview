@@ -32,6 +32,9 @@ public partial class MainViewModel : ObservableObject
     private int _currentTrackIndex;
     private int _trackInfoToken;
 
+    /// <summary>Set while a selection is being restored, which must not start playback.</summary>
+    private bool _selectQuietly;
+
     /// <summary>Raised with a file path when the view should start playing a track.</summary>
     public event Action<string>? PlayFileRequested;
 
@@ -73,11 +76,27 @@ public partial class MainViewModel : ObservableObject
 
     // ----- Album loading -----------------------------------------------------
 
-    private void LoadAlbums()
+    /// <summary>
+    /// Rebuilds the album list from disk.
+    /// </summary>
+    /// <param name="selectFolder">
+    /// The album to select and start playing afterwards. Without it the album that was selected
+    /// before is restored, quietly: clearing the list makes the ListBox write <c>null</c> back
+    /// into <see cref="SelectedAlbum"/>, and everything hanging off the selection — the Airplay,
+    /// reject and normalisation buttons — then sits there disabled with a full list in front of
+    /// it. That is what a reload, or an import in which every single item failed, used to leave
+    /// behind. Restoring is not a reason to start the music over, hence no auto-play.
+    /// </param>
+    private void LoadAlbums(string? selectFolder = null)
     {
+        var restore = selectFolder ?? SelectedAlbum?.Album.FolderPath;
+
         Albums.Clear();
         foreach (var album in _library.LoadReviewQueue(_config.ReviewDir))
             Albums.Add(new AlbumViewModel(album, _store));
+
+        if (restore is not null)
+            SelectAlbumByFolder(restore, autoPlay: selectFolder is not null);
     }
 
     [RelayCommand]
@@ -99,17 +118,28 @@ public partial class MainViewModel : ObservableObject
     }
 
     /// <summary>
-    /// Selects the album that lives in <paramref name="folderPath"/>, which auto-plays it.
-    /// Used after an import so the freshly acquired album starts playing. Must be called
-    /// after <see cref="LoadAlbums"/>, whose rebuilt view models are what gets matched.
+    /// Selects the album that lives in <paramref name="folderPath"/>. Used after an import so the
+    /// freshly acquired album starts playing, and after a reload to put the selection back where
+    /// it was. Must be called on the rebuilt view models, i.e. after <see cref="LoadAlbums"/>.
     /// </summary>
-    private void SelectAlbumByFolder(string folderPath)
+    /// <param name="autoPlay">False selects without starting playback (see <see cref="LoadAlbums"/>).</param>
+    private void SelectAlbumByFolder(string folderPath, bool autoPlay = true)
     {
         var target = Normalise(folderPath);
         var match = Albums.FirstOrDefault(
             a => string.Equals(Normalise(a.Album.FolderPath), target, StringComparison.OrdinalIgnoreCase));
-        if (match is not null)
+        if (match is null)
+            return;
+
+        _selectQuietly = !autoPlay;
+        try
+        {
             SelectedAlbum = match;
+        }
+        finally
+        {
+            _selectQuietly = false;
+        }
 
         static string Normalise(string path)
             => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
@@ -137,6 +167,11 @@ public partial class MainViewModel : ObservableObject
 
         newValue.PropertyChanged += OnSelectedAlbumPropertyChanged;
         NotifyAlbumCommandsChanged();
+
+        // A selection restored after a reload is the same album the user was already looking at:
+        // no reason to hydrate it again, let alone to restart it from track one.
+        if (_selectQuietly)
+            return;
 
         PrefetchTracks(newValue);
 
@@ -402,9 +437,9 @@ public partial class MainViewModel : ObservableObject
                 }
             }
 
-            LoadAlbums();
-            if (report.Imported.Count > 0)
-                SelectAlbumByFolder(report.Imported[0]);   // start reviewing the new album right away
+            // Start reviewing the new album right away; if nothing made it through, the album
+            // that was selected before stays selected.
+            LoadAlbums(report.Imported.FirstOrDefault());
 
             ReportImportOutcome(report);
         }
@@ -709,8 +744,7 @@ public partial class MainViewModel : ObservableObject
         try
         {
             var result = await Task.Run(() => RetryWhileLocked(() => apply(new AlbumNormalizer(), folderPath)));
-            LoadAlbums();
-            SelectAlbumByFolder(result.FolderPath);
+            LoadAlbums(result.FolderPath);   // the folder may have been renamed underneath us
             StatusText = result.AnyChange
                 ? $"{what} normalisiert – {result.RenamedFiles} Datei(en) umbenannt, "
                   + $"{result.RetaggedFiles} Tag(s) aktualisiert"
