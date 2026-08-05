@@ -46,7 +46,7 @@ Beim ersten Start werden Defaults verwendet; über **Einstellungen** anpassbar u
 
 | Zweck | Default |
 |---|---|
-| Archiv (320, unberührt) | `D:\Nextcloud\Dark Ambient` |
+| Archiv (320, unberührt) | `D:\Nextcloud\Multimedia\Music\Styles\Dark Ambient` |
 | Review (192k, Queue) | `D:\Nextcloud\Dark Ambient Review` |
 | Airplay (freigegeben) | `D:\Nextcloud\Dark Ambient 192kbps` |
 | Download (ZIP-Zwischenablage) | `%USERPROFILE%\Downloads` |

@@ -47,6 +47,16 @@ these (or credentials) sneak in.
   NOT LUFS/loudnorm.
 - **Airplay folder suffix uses square brackets**: `[OHNE TRACK 2, 3 und 5]` / `[NUR TRACK 1 UND 4]`,
   whichever string is **shorter**; rejected track files are omitted. See `TrackListFormatter`.
+- **Airplay retires the review copy** (since 2026-08-05): publishing is a *move*, not a copy.
+  Whole-album approval — the common case — hands the folder over with `Directory.Move`
+  (`AirplayPublisher.TryMove`): inside the Nextcloud root that is a rename the client replays
+  server-side instead of a second upload, it needs no hydration, and the `.review.json` that rode
+  along is deleted at the destination. Anything else (a rejected or undecided track, an airplay
+  folder that already exists, another volume, a locked file) falls back to the selective copy, and
+  `MainViewModel.RetireReviewCopy` then marks the album published and puts the review folder in the
+  **recycle bin**. Losing it is harmless — the 320k master stays in the archive. Before this,
+  publishing only set `Published = true`, so `LoadReviewQueue` hid the album while the folder piled
+  up in the review directory forever.
 - **Listen counter is a percentage**: +100%/trackcount per fully-played track (200% = twice through).
   Persisted as `CompletedTrackPlays` in a hidden **`.review.json`** sidecar per album folder (travels
   with Nextcloud sync). Decisions per track number live there too.
@@ -87,13 +97,32 @@ these (or credentials) sneak in.
   Until 2026-08-02 folder drops were only relocated into the review dir and skipped both steps —
   that is where the 320k, un-normalised albums in the review queue came from.
 - **Skipping a pointless re-encode**: before a folder drop is processed, `Mp3StreamProbe` checks
-  whether the album *already* is CBR at the target bitrate; only then does the user get asked
-  whether to skip the encode (normalisation runs either way — `ProcessAlbumAsync(reencode: false)`
-  copies instead of calling ffmpeg, then still runs mp3gain). The check walks **every MPEG frame
+  whether the album *already* is CBR at the target bitrate; if so the encode is skipped silently
+  (normalisation runs either way — `ProcessAlbumAsync(reencode: false)` copies instead of calling
+  ffmpeg, then still runs mp3gain). Until 2026-08-05 this was a Yes/No dialog per album, which was
+  pure nagging — there is nothing to decide; the import summary now lists what was taken over.
+  The check walks **every MPEG frame
   header** and compares the bitrate field, because an *average* bitrate cannot tell CBR from VBR:
   LAME ABR at 192 and V2 both average around the target and are not CBR. Verified against real
   ffmpeg output (CBR 192/320 → yes, `-q:a 2` and `-b:a 192k -abr 1` → no). The Xing/Info/VBRI
   frame is excluded from the comparison, or every tagged CBR file would look variable.
+- **One summary dialog per drop** (`MainViewModel.ReportImportOutcome`): failures (album + the
+  exception's message), low-bitrate sources and skipped re-encodes go into a single MessageBox at
+  the *end* of the batch — a clean import shows none at all. Per-album questions during the run are
+  gone; the only one left is the cross-volume "delete the source folder?" prompt, which really is
+  a decision. Failures are collected per item, never thrown, so the box is the one place that
+  says why something is missing.
+- **Low-bitrate warning after an import** (since 2026-08-05): the drop import appends
+  `# Alben enthalten Tracks < 160 kbit/s: Album (128), …` to the status line — the number in
+  brackets is the album's **worst** track. Measured on the **archive
+  master**, not on the review copy — the encode lifts everything to 192, so afterwards nothing can
+  still tell that the source was 128. Deliberately *not* `Mp3StreamProbe`: this is a warning, not a
+  decision, so `TrackMetadata.FindTracksBelow` uses TagLib's cheap estimate (first header + file
+  length, or the Xing frame count) instead of walking every frame — same number the player panel
+  shows. Runs *after* `ProcessAlbumAsync`, when the pipeline has hydrated every track anyway, and
+  skips cloud placeholders; a bitrate of 0 means "unreadable" and is never reported as "too low".
+  `Mp3StreamProbe.Probe` skips placeholders for the same reason (reading one is an app-triggered
+  download) — `ConfirmReencodeAsync` probes a dropped folder *before* it gets hydrated.
 - **Both pipeline phases run in parallel** (`AudioProcessor.ProcessAlbumAsync`, since 2026-08-04),
   and they want **different degrees** — measured on an 11-track album, Ryzen 7 4800U (8C/16T, 15 W):
   - *Re-encode* — `Clamp(ProcessorCount / 2, 1, 8)`, i.e. the physical core count. 1 → 64 s,
@@ -132,6 +161,11 @@ these (or credentials) sneak in.
   lowercase unless first/last. Case-only renames need a **temp-name detour** — Windows treats
   `x.mp3`/`X.mp3` as the same path and `File.Move` would fail. The op is idempotent, so the caller
   retries on `IOException` (the player may still hold the current track open).
+- **Overrides may use `<Basis>`** (`AppConfig.Resolve`, since 2026-08-05): the settings labels
+  advertise `<Basis>\…` as the default, so an override spelled that way is expanded to `CloudBase`,
+  and any non-rooted value is taken relative to it as well. Before that such a value resolved
+  against the app's **working directory** — the import then died per album with "Die Syntax für den
+  Dateinamen … ist falsch" on `…\bin\Release\net9.0-windows\<Basis>\Dark Ambient`.
 - **Directory defaults** (all under `CloudBase` = `D:\Nextcloud`, individually overridable):
   Archive = `…\Multimedia\Music\Styles\Dark Ambient` (untouched MP3 320 master — note the deep path),
   Review = `…\Dark Ambient Review` (192k queue), Airplay = `…\Dark Ambient 192kbps`.

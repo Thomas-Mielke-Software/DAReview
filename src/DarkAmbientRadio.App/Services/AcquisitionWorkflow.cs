@@ -6,6 +6,22 @@ using DarkAmbientRadio.Core.Files;
 
 namespace DarkAmbientRadio.App.Services;
 
+/// <summary>What one import produced.</summary>
+/// <param name="ReviewFolder">The review copy, i.e. the album to select afterwards.</param>
+/// <param name="SourceToRemove">
+/// The dropped folder left behind by a cross-volume copy, which the caller must ask about;
+/// null when there is nothing to clean up.
+/// </param>
+/// <param name="LowBitrateTracks">
+/// The <em>source</em> tracks below <see cref="AcquisitionWorkflow.LowBitrateThresholdKbps"/>.
+/// Empty is the normal case; anything in here means the master was already poor and the review
+/// copy only looks like 192 kbit/s.
+/// </param>
+public readonly record struct AlbumImportResult(
+    string ReviewFolder,
+    string? SourceToRemove,
+    IReadOnlyList<TrackBitrate> LowBitrateTracks);
+
 /// <summary>
 /// Orchestrates the acquisition half of the workflow: redeem a code on Bandcamp,
 /// download the ZIP, unpack into the archive, then re-encode + normalise into the
@@ -13,6 +29,12 @@ namespace DarkAmbientRadio.App.Services;
 /// </summary>
 public sealed class AcquisitionWorkflow
 {
+    /// <summary>
+    /// Below this the source material is worth complaining about: re-encoding lifts every track
+    /// to the target bitrate, so nothing downstream can still tell that it came from 128 kbit/s.
+    /// </summary>
+    public const int LowBitrateThresholdKbps = 160;
+
     private readonly AppConfig _config;
 
     public AcquisitionWorkflow(AppConfig config) => _config = config;
@@ -34,14 +56,14 @@ public sealed class AcquisitionWorkflow
             zipPath = await redeemer.RedeemAsync(code, addToCollection: true, waitForManualLogin, progress, ct);
         }
 
-        return await ProcessZipAsync(zipPath, progress, ct);
+        return (await ProcessZipAsync(zipPath, progress, ct)).ReviewFolder;
     }
 
     /// <summary>
     /// Processes an already-downloaded ZIP (unpack -> re-encode -> normalise) into the review
     /// folder. Used both by the Bandcamp flow and by drag-and-drop import.
     /// </summary>
-    public async Task<string> ProcessZipAsync(
+    public async Task<AlbumImportResult> ProcessZipAsync(
         string zipPath,
         IProgress<string> progress,
         CancellationToken ct = default)
@@ -62,7 +84,7 @@ public sealed class AcquisitionWorkflow
     /// False when the caller established that the folder already holds exactly what the encode
     /// would produce (see <see cref="Mp3StreamProbe"/>); the MP3s are then taken over as they are.
     /// </param>
-    public async Task<FolderImportResult> ProcessFolderAsync(
+    public async Task<AlbumImportResult> ProcessFolderAsync(
         string folderPath,
         bool reencode,
         IProgress<string> progress,
@@ -86,12 +108,12 @@ public sealed class AcquisitionWorkflow
             ? new FolderImportResult(Path.TrimEndingDirectorySeparator(Path.GetFullPath(folderPath)), null)
             : new FolderImporter().Import(folderPath, _config.ArchiveDir, progress, ct);
 
-        var reviewFolder = await ProcessAlbumFolderAsync(archived.TargetPath, reencode, progress, ct);
-        return archived with { TargetPath = reviewFolder };
+        var imported = await ProcessAlbumFolderAsync(archived.TargetPath, reencode, progress, ct);
+        return imported with { SourceToRemove = archived.SourceToRemove };
     }
 
     /// <summary>Re-encodes and normalises an archived album folder into the review folder.</summary>
-    private async Task<string> ProcessAlbumFolderAsync(
+    private async Task<AlbumImportResult> ProcessAlbumFolderAsync(
         string archiveFolder,
         bool reencode,
         IProgress<string> progress,
@@ -100,7 +122,13 @@ public sealed class AcquisitionWorkflow
         var audio = new AudioProcessor(_config.FfmpegPath, _config.Mp3gainPath, _config.Bitrate, _config.Mp3GainDelta);
         var reviewFolder = await audio.ProcessAlbumAsync(archiveFolder, _config.ReviewDir, reencode, progress, ct);
 
+        // The master, not the review copy: the encode lifts everything to the target bitrate, so
+        // only the source can still say that the material was poor. Probing afterwards also means
+        // the pipeline has already pulled every track out of the cloud.
+        var lowBitrate = await Task.Run(
+            () => TrackMetadata.FindTracksBelow(archiveFolder, LowBitrateThresholdKbps), ct);
+
         progress.Report("Fertig – Album ist im Review.");
-        return reviewFolder;
+        return new AlbumImportResult(reviewFolder, SourceToRemove: null, lowBitrate);
     }
 }

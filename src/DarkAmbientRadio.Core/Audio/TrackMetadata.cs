@@ -1,4 +1,11 @@
+using DarkAmbientRadio.Core.Files;
+
 namespace DarkAmbientRadio.Core.Audio;
+
+/// <summary>One track's bitrate, as found by <see cref="TrackMetadata.FindTracksBelow"/>.</summary>
+/// <param name="FileName">The file name, without the folder.</param>
+/// <param name="Kbps">Bitrate in kbit/s.</param>
+public readonly record struct TrackBitrate(string FileName, int Kbps);
 
 /// <summary>
 /// The ID3 and stream facts about a single track, as shown next to the player.
@@ -51,6 +58,31 @@ public sealed record TrackMetadata
         {
             return new TrackMetadata();
         }
+    }
+
+    /// <summary>
+    /// The MP3s directly inside <paramref name="folder"/> whose bitrate is below
+    /// <paramref name="kbps"/>, in album order — a quality warning, so it uses the same cheap
+    /// <see cref="Bitrate"/> as the player panel (header plus file length, or the Xing frame
+    /// count on VBR) instead of <see cref="Mp3StreamProbe"/>'s exact frame walk.
+    /// <para>
+    /// A track whose bitrate cannot be read is left out: "don't know" is not "too low". Cloud
+    /// placeholders are skipped rather than opened — reading one is an app-triggered download.
+    /// </para>
+    /// </summary>
+    public static IReadOnlyList<TrackBitrate> FindTracksBelow(string folder, int kbps)
+    {
+        if (!Directory.Exists(folder))
+            return [];
+
+        return Directory.GetFiles(folder, "*.mp3")
+            .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
+            .Select(file => new TrackBitrate(Path.GetFileName(file), BitrateOf(file)))
+            .Where(track => track.Kbps > 0 && track.Kbps < kbps)   // 0 means unreadable
+            .ToList();
+
+        static int BitrateOf(string file)
+            => CloudFiles.IsPlaceholder(file) ? 0 : Read(file).Bitrate;
     }
 
     private static string? Clean(string? value)

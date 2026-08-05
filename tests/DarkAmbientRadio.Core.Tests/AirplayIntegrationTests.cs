@@ -71,6 +71,52 @@ public class AirplayIntegrationTests : IDisposable
         Assert.Contains("Artist - Test Album - 03 Track 3.mp3", produced);
         Assert.DoesNotContain("Artist - Test Album - 02 Track 2.mp3", produced);
         Assert.Contains("cover.jpg", produced); // cover art carried over
+
+        // The rejected track has to stay behind, so this is a copy — retiring the review folder
+        // is then the caller's business.
+        Assert.False(result.ReviewFolderMoved);
+        Assert.True(Directory.Exists(album.FolderPath));
+    }
+
+    [Fact]
+    public void An_album_approved_as_a_whole_is_moved_instead_of_copied()
+    {
+        var reviewFolder = CreateAlbum("Test Album", 2);
+        var store = new ReviewStore();
+        var album = new AlbumLibrary().LoadReviewQueue(_reviewDir).Single();
+        store.SetDecision(album, album.Tracks[0], TrackDecision.Approved);
+        store.SetDecision(album, album.Tracks[1], TrackDecision.Approved);
+
+        var result = new AirplayPublisher().Publish(album, _airplayDir);
+
+        Assert.True(result.ReviewFolderMoved);
+        Assert.Equal("Test Album", result.FolderName);   // no suffix: nothing was rejected
+        Assert.False(Directory.Exists(reviewFolder));
+
+        var produced = Directory.GetFiles(result.DestinationFolder).Select(Path.GetFileName).ToList();
+        Assert.Contains("Artist - Test Album - 01 Track 1.mp3", produced);
+        Assert.Contains("Artist - Test Album - 02 Track 2.mp3", produced);
+        Assert.Contains("cover.jpg", produced);
+
+        // The sidecar rode along in the move and must not be left in what gets broadcast.
+        Assert.DoesNotContain(ReviewState.FileName, produced);
+    }
+
+    [Fact]
+    public void An_existing_airplay_folder_is_filled_track_by_track_rather_than_replaced()
+    {
+        var reviewFolder = CreateAlbum("Test Album", 2);
+        Directory.CreateDirectory(Path.Combine(_airplayDir, "Test Album"));   // an earlier publish
+        var store = new ReviewStore();
+        var album = new AlbumLibrary().LoadReviewQueue(_reviewDir).Single();
+        store.SetDecision(album, album.Tracks[0], TrackDecision.Approved);
+        store.SetDecision(album, album.Tracks[1], TrackDecision.Approved);
+
+        var result = new AirplayPublisher().Publish(album, _airplayDir);
+
+        Assert.False(result.ReviewFolderMoved);
+        Assert.True(Directory.Exists(reviewFolder));
+        Assert.Equal(2, Directory.GetFiles(result.DestinationFolder, "*.mp3").Length);
     }
 
     [Fact]

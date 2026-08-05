@@ -74,10 +74,30 @@ public sealed class AppConfig
     [JsonIgnore]
     public double Mp3GainDelta => NormalizationDb - 89.0;
 
+    /// <summary>The placeholder the settings labels use for <see cref="CloudBase"/>.</summary>
+    public const string BasePlaceholder = "<Basis>";
+
+    /// <summary>
+    /// The override, or &lt;CloudBase&gt;\&lt;defaultSubfolder&gt; when none is set.
+    /// <para>
+    /// An override may spell the base as the literal <see cref="BasePlaceholder"/> the labels
+    /// show, and anything not rooted is taken relative to the base too. Before that, such a value
+    /// resolved against the app's <em>working directory</em>, which turned into
+    /// <c>…\bin\Release\net9.0-windows\&lt;Basis&gt;\Dark Ambient</c> and failed every album with
+    /// "Die Syntax für den Dateinamen … ist falsch" — an error that names a path nobody typed.
+    /// </para>
+    /// </summary>
     private string Resolve(string? overrideValue, string defaultSubfolder)
-        => string.IsNullOrWhiteSpace(overrideValue)
-            ? Path.Combine(CloudBase, defaultSubfolder)
-            : overrideValue!;
+    {
+        if (string.IsNullOrWhiteSpace(overrideValue))
+            return Path.Combine(CloudBase, defaultSubfolder);
+
+        var value = overrideValue!.Trim();
+        if (value.StartsWith(BasePlaceholder, StringComparison.OrdinalIgnoreCase))
+            value = value[BasePlaceholder.Length..].TrimStart('\\', '/');
+
+        return Path.IsPathRooted(value) ? value : Path.Combine(CloudBase, value);
+    }
 
     // ----- Persistence -------------------------------------------------------
 

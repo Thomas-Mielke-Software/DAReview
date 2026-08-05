@@ -360,8 +360,7 @@ public partial class MainViewModel : ObservableObject
 
         IsBusy = true;
         var progress = new Progress<string>(msg => StatusText = msg);
-        var imported = new List<string>();
-        var failures = new List<string>();
+        var report = new ImportReport();
         try
         {
             var workflow = new AcquisitionWorkflow(_config);
@@ -372,11 +371,11 @@ public partial class MainViewModel : ObservableObject
             {
                 try
                 {
-                    imported.Add(await Task.Run(() => workflow.ProcessZipAsync(zip, progress, CancellationToken.None)));
+                    Track(await Task.Run(() => workflow.ProcessZipAsync(zip, progress, CancellationToken.None)));
                 }
                 catch (Exception ex)
                 {
-                    failures.Add($"{Path.GetFileName(zip)}: {ex.Message}");
+                    report.Failures.Add($"{Path.GetFileName(zip)}: {ex.Message}");
                 }
             }
 
@@ -384,81 +383,143 @@ public partial class MainViewModel : ObservableObject
             {
                 try
                 {
-                    var reencode = await ConfirmReencodeAsync(folder);
+                    var skipNote = await CheckRecodeSkipAsync(folder);
                     var result = await Task.Run(
-                        () => workflow.ProcessFolderAsync(folder, reencode, progress, CancellationToken.None));
-                    imported.Add(result.TargetPath);
+                        () => workflow.ProcessFolderAsync(folder, skipNote is null, progress, CancellationToken.None));
+                    Track(result);
+
+                    // Only now: an album that never made it must not turn up under the notes as
+                    // if something had been done with it.
+                    if (skipNote is not null)
+                        report.SkippedRecode.Add(skipNote);
 
                     if (result.SourceToRemove is { } leftover)
                         await ConfirmAndDeleteSourceAsync(leftover);
                 }
                 catch (Exception ex)
                 {
-                    failures.Add($"{Path.GetFileName(Path.TrimEndingDirectorySeparator(folder))}: {ex.Message}");
+                    report.Failures.Add($"{Path.GetFileName(Path.TrimEndingDirectorySeparator(folder))}: {ex.Message}");
                 }
             }
 
             LoadAlbums();
-            if (imported.Count > 0)
-                SelectAlbumByFolder(imported[0]);   // start reviewing the new album right away
+            if (report.Imported.Count > 0)
+                SelectAlbumByFolder(report.Imported[0]);   // start reviewing the new album right away
 
-            ReportImportOutcome(imported.Count, failures);
+            ReportImportOutcome(report);
         }
         finally
         {
             IsBusy = false;
         }
+
+        void Track(AlbumImportResult result)
+        {
+            report.Imported.Add(result.ReviewFolder);
+
+            // One number per album: the worst track, which is what the complaint is about.
+            if (result.LowBitrateTracks.Count > 0)
+                report.LowBitrate.Add(
+                    $"{Path.GetFileName(result.ReviewFolder)} ({result.LowBitrateTracks.Min(t => t.Kbps)})");
+        }
     }
 
-    private void ReportImportOutcome(int importedCount, IReadOnlyList<string> failures)
+    /// <summary>Everything one drop is worth telling the user about, collected item by item.</summary>
+    private sealed class ImportReport
     {
-        if (failures.Count == 0)
-        {
-            StatusText = importedCount == 1 ? "Import fertig." : $"{importedCount} Alben importiert.";
-            return;
-        }
+        public List<string> Imported { get; } = [];
 
-        StatusText = importedCount > 0
-            ? $"{importedCount} importiert, {failures.Count} fehlgeschlagen."
-            : $"Import fehlgeschlagen ({failures.Count}).";
+        /// <summary>"Album: Grund" — what went wrong, in the words of the exception.</summary>
+        public List<string> Failures { get; } = [];
 
-        // The status line truncates and these are the details that matter for a retry.
-        MessageBox.Show(
-            string.Join("\n\n", failures),
-            failures.Count == 1 ? "Import fehlgeschlagen" : $"{failures.Count} Importe fehlgeschlagen",
-            MessageBoxButton.OK,
-            MessageBoxImage.Warning);
+        /// <summary>"Album (128)" — the bitrate is the album's worst track.</summary>
+        public List<string> LowBitrate { get; } = [];
+
+        /// <summary>"Album (11 Tracks)" — taken over unchanged instead of re-encoded.</summary>
+        public List<string> SkippedRecode { get; } = [];
     }
 
     /// <summary>
-    /// Asks before re-encoding an album that already is exactly what the pipeline would produce.
-    /// MP3 is lossy, so a second pass costs quality for nothing. The check reads the MPEG frame
-    /// headers rather than an average bitrate — a VBR file can average the target exactly and
-    /// still be a different animal; anything not provably CBR at the target is re-encoded.
+    /// Sums the drop up: a short status line, plus one dialog at the end when there is anything to
+    /// report. A clean import shows no dialog at all — the box exists for the failures, and takes
+    /// the two notes along rather than interrupting the run with a question per album.
     /// </summary>
-    private async Task<bool> ConfirmReencodeAsync(string folder)
+    private void ReportImportOutcome(ImportReport report)
+    {
+        StatusText = (report.Failures.Count, report.Imported.Count) switch
+        {
+            (0, 1) => "Import fertig.",
+            (0, var n) => $"{n} Alben importiert.",
+            (var f, 0) => $"Import fehlgeschlagen ({f}).",
+            (var f, var n) => $"{n} importiert, {f} fehlgeschlagen.",
+        };
+        AppendLowBitrateWarning(report.LowBitrate);
+
+        var sections = new List<string>();
+        if (report.Failures.Count > 0)
+            sections.Add(Section("Nicht importiert:", report.Failures));
+        if (report.LowBitrate.Count > 0)
+            sections.Add(Section(
+                $"Quelle liegt unter {AcquisitionWorkflow.LowBitrateThresholdKbps} kbit/s "
+                + "(in Klammern der schlechteste Track):",
+                report.LowBitrate));
+        if (report.SkippedRecode.Count > 0)
+            sections.Add(Section(
+                $"Recode übersprungen – lag bereits vollständig in {ExpectedBitrate} kbit/s CBR vor, "
+                + $"unverändert übernommen und auf {_config.NormalizationDb:0.#} dB normalisiert:",
+                report.SkippedRecode));
+
+        if (sections.Count == 0)
+            return;
+
+        MessageBox.Show(
+            string.Join("\n\n", sections),
+            report.Failures.Count == 0 ? "Import abgeschlossen" : "Import mit Fehlern",
+            MessageBoxButton.OK,
+            report.Failures.Count == 0 ? MessageBoxImage.Information : MessageBoxImage.Warning);
+
+        static string Section(string heading, IEnumerable<string> items)
+            => heading + "\n" + string.Join("\n", items.Select(item => "• " + item));
+    }
+
+    /// <summary>
+    /// Names the albums whose <em>source</em> already was below the threshold, each with the
+    /// bitrate of its worst track in brackets. The review copies all carry the target bitrate,
+    /// so this is the only point at which that is still visible.
+    /// </summary>
+    private void AppendLowBitrateWarning(IReadOnlyList<string> albums)
+    {
+        if (albums.Count == 0)
+            return;
+
+        var subject = albums.Count == 1 ? "1 Album enthält" : $"{albums.Count} Alben enthalten";
+        StatusText += $" {subject} Tracks < {AcquisitionWorkflow.LowBitrateThresholdKbps} kbit/s: "
+                    + string.Join(", ", albums);
+    }
+
+    /// <summary>
+    /// Whether this folder may skip the encoder, as the line for the summary — null means it is
+    /// re-encoded like everything else. An album that already is exactly what the pipeline would
+    /// produce is taken over unchanged: MP3 is lossy, so a second pass would cost quality for
+    /// nothing. The check reads the MPEG frame headers rather than an average bitrate — a VBR file
+    /// can average the target exactly and still be a different animal, so anything not provably
+    /// CBR at the target is re-encoded.
+    /// <para>
+    /// Nothing to decide here, hence no dialog — the final summary lists what was taken over.
+    /// Normalisation runs either way.
+    /// </para>
+    /// </summary>
+    private async Task<string?> CheckRecodeSkipAsync(string folder)
     {
         var target = ExpectedBitrate;
         if (target <= 0)
-            return true;
+            return null;
 
-        StatusText = $"Prüfe Bitrate von {Path.GetFileName(Path.TrimEndingDirectorySeparator(folder))} …";
+        var name = Path.GetFileName(Path.TrimEndingDirectorySeparator(folder));
+        StatusText = $"Prüfe Bitrate von {name} …";
+
         var info = await Task.Run(() => Mp3StreamProbe.ProbeAlbum(folder));
-        if (!info.IsConstantAt(target))
-            return true;
-
-        var answer = MessageBox.Show(
-            $"»{Path.GetFileName(Path.TrimEndingDirectorySeparator(folder))}« liegt bereits "
-            + $"vollständig in {target} kbit/s CBR vor ({info.TrackCount} Tracks).\n\n"
-            + "Ein erneutes Encodieren würde die Qualität verschlechtern, ohne etwas zu ändern.\n\n"
-            + "Recode überspringen und die Dateien unverändert übernehmen?\n\n"
-            + $"Die Normalisierung auf {_config.NormalizationDb:0.#} dB läuft in beiden Fällen.",
-            "Album ist bereits im Zielformat",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Information,
-            MessageBoxResult.Yes);
-
-        return answer != MessageBoxResult.Yes;
+        return info.IsConstantAt(target) ? $"{name} ({info.TrackCount} Tracks)" : null;
     }
 
     /// <summary>
@@ -471,7 +532,7 @@ public partial class MainViewModel : ObservableObject
             $"»{Path.GetFileName(source)}« liegt auf einem anderen Laufwerk und wurde deshalb "
             + "kopiert statt verschoben.\n\nSoll der Ursprungsordner jetzt gelöscht werden?\n\n"
             + source,
-            "Ursprungsordner löschen?",
+            "Ursprungsordner im Review-Verzeichnis löschen?",
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning,
             MessageBoxResult.No);
@@ -510,20 +571,49 @@ public partial class MainViewModel : ObservableObject
         if (album is null)
             return;
 
+        // Every open handle has to go first — the review folder is about to be moved away or
+        // deleted, and the player holds the current track while a prefetch may stream the rest.
+        StopRequested?.Invoke();
+        ClearTrackInfo();
+        CancelPrefetch();
+
         try
         {
             var publisher = new AirplayPublisher(_config.ConnectorOhne, _config.ConnectorNur);
             var result = publisher.Publish(album.Album, _config.AirplayDir);
-            _store.MarkPublished(album.Album, result.FolderName);
+            var leftover = result.ReviewFolderMoved ? null : RetireReviewCopy(album, result.FolderName);
 
-            StopRequested?.Invoke();
             Albums.Remove(album);
             SelectedAlbum = null;
-            StatusText = $"Airplay: {result.FolderName} ({result.TrackCount} Tracks).";
+            StatusText = $"Airplay: {result.FolderName} ({result.TrackCount} Tracks)."
+                       + (leftover is null ? " Review-Ordner ist weg." : $" Review-Ordner blieb liegen: {leftover}");
         }
         catch (Exception ex)
         {
             StatusText = $"Airplay fehlgeschlagen: {ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// Removes the review copy once its tracks are on air — publishing is a move, not a copy.
+    /// Nothing is lost: the untouched 320k master stays in the archive, the review copy is
+    /// reproducible from it, and the folder goes to the recycle bin rather than being erased.
+    /// Returns the reason when the folder had to stay, or null when it is gone.
+    /// </summary>
+    private string? RetireReviewCopy(AlbumViewModel album, string publishedFolderName)
+    {
+        // Written before the delete: should the folder survive, the flag is what keeps the
+        // album out of the queue on the next scan.
+        _store.MarkPublished(album.Album, publishedFolderName);
+
+        try
+        {
+            RetryWhileLocked(() => new AlbumRemover().Delete(album.Album.FolderPath));
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return ex.Message;   // the tracks are on air either way; this is only cleanup
         }
     }
 

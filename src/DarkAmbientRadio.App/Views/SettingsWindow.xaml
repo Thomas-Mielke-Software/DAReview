@@ -28,7 +28,7 @@
                 <TextBlock Text="Cloud-Basisverzeichnis"/>
                 <TextBox Text="{Binding CloudBase, UpdateSourceTrigger=PropertyChanged}"/>
 
-                <TextBlock Text="Archiv (320, leer = &lt;Basis&gt;\Dark Ambient)"/>
+                <TextBlock Text="Archiv (320, leer = &lt;Basis&gt;\Multimedia\Music\Styles\Dark Ambient)"/>
                 <TextBox Text="{Binding ArchiveDirOverride, UpdateSourceTrigger=PropertyChanged}"/>
 
                 <TextBlock Text="Review (192k, leer = &lt;Basis&gt;\Dark Ambient Review)"/>

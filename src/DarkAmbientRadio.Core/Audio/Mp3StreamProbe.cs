@@ -1,3 +1,5 @@
+using DarkAmbientRadio.Core.Files;
+
 namespace DarkAmbientRadio.Core.Audio;
 
 /// <summary>What the MPEG frame headers of one MP3 say about its bitrate.</summary>
@@ -47,6 +49,11 @@ public static class Mp3StreamProbe
     /// </summary>
     public static Mp3StreamInfo? Probe(string filePath)
     {
+        // Reading a cloud placeholder is an app-triggered download, and a few of those get the app
+        // blocked by Windows. "Don't know" costs a re-encode at worst; the block costs everything.
+        if (CloudFiles.IsPlaceholder(filePath))
+            return null;
+
         try
         {
             // Denies nothing: the file may be open elsewhere (player, Nextcloud prefetch).
