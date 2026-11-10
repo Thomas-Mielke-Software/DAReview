@@ -158,6 +158,28 @@ these (or credentials) sneak in.
 
   Together 94 s → 28 s for that album. Encode results go into an **index-aligned array**, not a
   shared list, so the track order survives whatever finishes first.
+- **A dead Nextcloud root is retryable, not fatal** (`AlbumLibrary.DirectoryUnavailable`, since
+  2026-11-10). With the client not yet running, the review root is still there as a reparse
+  point — `Directory.Exists` says **yes** — and the enumeration behind it then throws
+  `IOException` *"Es wurde eine ungültige Namensanforderung gestellt"* (ERROR_INVALID_NAME).
+  Since the first `LoadAlbums` runs from the `MainViewModel` **constructor**, that was an
+  unhandled exception at startup, before any window existed. `AlbumLibrary` now asks the
+  `DirectoryUnavailable` callback (`IOException` / `UnauthorizedAccessException` only) and retries
+  as long as it says so; with **no** callback it rethrows, which keeps the tests and any headless
+  caller honest instead of handing them a silently empty list. Cancel hands Core an empty queue
+  and the WPF handler then **ends the app** — without the review directory there is nothing to
+  do: `Application.Shutdown` once a window is up, so `OnClosing` still persists the window
+  placement, but `Environment.Exit(0)` during startup, where `App.OnStartup` sits inside
+  `new MainViewModel(...)` and has not assigned `MainWindow` yet — a queued `Shutdown` would only
+  be dispatched after the window had been created and flashed up.
+  Two traps: the listing had to move from `EnumerateDirectories` to **`GetDirectories`**, because
+  the lazy one only touches the file system on the first `MoveNext`, i.e. inside the caller's
+  `foreach`, where no `try` around the call itself ever sees it — and a half-consumed iterator
+  could not be retried anyway. And the dialog cannot be a WPF `MessageBox`: `MessageBoxButton` has
+  no **RetryCancel** (only OK, OKCancel, YesNo, YesNoCancel), so `RetryCancelDialog` calls
+  `user32!MessageBoxW` with `MB_RETRYCANCEL` — Windows localises the buttons itself. It is
+  task-modal while `Application.Current.MainWindow` is still null. A root that is simply
+  **absent** is unchanged: empty queue, no dialog.
 - **Nextcloud placeholders break the pipeline.** Files in a synced folder can be dehydrated
   (`Offline | RecallOnDataAccess`) — in practice it is always `cover.jpg`, because nothing ever
   opens it while the MP3s get played. `File.Copy` and ffmpeg then die with *"Der Cloudvorgang war
@@ -168,6 +190,18 @@ these (or credentials) sneak in.
   Dateidownloads), after which every further read fails instantly. A retry loop is the fastest way
   into that block. Measured on real covers, a pinned fetch took **18–51 s** — budget minutes, not
   a retry with a 500 ms backoff.
+- **An orphaned placeholder is 0 bytes and no attribute admits it** (`AudioProcessor.EnsureTracksHaveContent`,
+  since 2026-08-05). A Nextcloud file that has *left* its sync root — recycled and restored, dragged
+  into a second root — keeps its cloud reparse point but ends up `Pinned | ReparsePoint | Archive`
+  with **length 0**: no `Offline`, no `RecallOnDataAccess`, so `CloudFiles.IsPlaceholder` sees
+  nothing to hydrate, a read returns 0 bytes without error, and the album walks straight into
+  ffmpeg. ffmpeg answers with exit code **-1094995529** = `AVERROR_INVALIDDATA` ("Invalid data
+  found when processing input") — which says nothing about missing content and is what the
+  `maath - no survivors for the new world` import reported for every track. `ProcessAlbumAsync`
+  now refuses such an album up front (before creating the review folder) and names the empty
+  tracks; only the *source* can be repaired. The check reads `FileInfo.Length`, the **logical**
+  size, which a properly dehydrated placeholder reports correctly without being fetched — it
+  downloads nothing. Empty non-audio files are tolerated (an empty cover copies over harmlessly).
 - **Hydrate before moving, not after.** `ProcessFolderAsync` calls `CloudFiles.HydrateFolder` on
   the dropped folder *before* `FolderImporter` moves it into the archive: once a placeholder has
   moved to a new path inside the sync root, the client must replay that move on the server before

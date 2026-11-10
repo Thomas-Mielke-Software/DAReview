@@ -45,6 +45,7 @@ public partial class MainViewModel : ObservableObject
     {
         _config = config;
         _codeSource = new ClipboardCodeSource(new ReviewCodeValidator(config.CodeRegex));
+        _library.DirectoryUnavailable = AskRetryReviewDir;
         LoadAlbums();
     }
 
@@ -97,6 +98,59 @@ public partial class MainViewModel : ObservableObject
 
         if (restore is not null)
             SelectAlbumByFolder(restore, autoPlay: selectFolder is not null);
+    }
+
+    /// <summary>
+    /// The review directory could not be read — practically always a Nextcloud sync root whose
+    /// client is not running yet. That used to take the whole app down, and at the worst moment:
+    /// the first <see cref="LoadAlbums"/> runs from the constructor, so the crash happened at
+    /// startup, before any window was up. A retry lets the user start Nextcloud and carry on;
+    /// "Abbrechen" ends the app, because without the review directory there is nothing to do.
+    /// </summary>
+    private static bool AskRetryReviewDir(string reviewDir, Exception ex)
+    {
+        var retry = RetryCancelDialog.Show(
+            $"""
+             Das Review-Verzeichnis konnte nicht gelesen werden:
+
+             {reviewDir}
+
+             {ex.Message}
+
+             Vermutlich läuft Nextcloud noch nicht. Client starten, dann „Wiederholen“.
+             „Abbrechen“ beendet das Programm.
+             """,
+            "Review-Verzeichnis nicht erreichbar");
+
+        if (!retry)
+            QuitAfterCancel();
+
+        return retry;
+    }
+
+    /// <summary>
+    /// Ends the app after "Abbrechen" was chosen above — by two different routes, because the
+    /// dialog can come up at two very different moments.
+    /// <para>
+    /// With a main window up (a refresh, a finished import) <see cref="Application.Shutdown()"/>
+    /// is the right one: it closes the window, so <c>OnClosing</c> still persists the window
+    /// placement into the config.
+    /// </para>
+    /// <para>
+    /// At startup there is no window yet — <c>App.OnStartup</c> is still inside
+    /// <c>new MainViewModel(...)</c> and assigns <see cref="Application.MainWindow"/> only
+    /// afterwards. <c>Shutdown</c> would merely be queued on the dispatcher there, so the window
+    /// would be created and flashed up before it takes effect. Nothing has been changed at that
+    /// point (the config was loaded, not written), so leaving straight away is both safe and the
+    /// only way to stay silent. Exit code 0: the user cancelled, nothing failed.
+    /// </para>
+    /// </summary>
+    private static void QuitAfterCancel()
+    {
+        if (Application.Current?.MainWindow is null)
+            Environment.Exit(0);
+        else
+            Application.Current.Shutdown();
     }
 
     [RelayCommand]

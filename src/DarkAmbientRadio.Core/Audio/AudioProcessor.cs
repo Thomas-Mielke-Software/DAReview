@@ -68,13 +68,16 @@ public sealed class AudioProcessor
         IProgress<string>? progress = null,
         CancellationToken ct = default)
     {
-        var destination = Path.Combine(reviewDir, Path.GetFileName(sourceFolder));
-        Directory.CreateDirectory(destination);
-
         var files = Directory.EnumerateFiles(sourceFolder)
             .Where(f => !Path.GetFileName(f).Equals(Models.ReviewState.FileName, StringComparison.OrdinalIgnoreCase))
             .OrderBy(f => Path.GetFileName(f), StringComparer.OrdinalIgnoreCase)
             .ToList();
+
+        // Before anything is created, so a hopeless album leaves no review folder behind.
+        EnsureTracksHaveContent(files);
+
+        var destination = Path.Combine(reviewDir, Path.GetFileName(sourceFolder));
+        Directory.CreateDirectory(destination);
 
         // Index-aligned so the mp3gain argument list stays in album order no matter which track
         // finishes first — no lock needed, every slot has exactly one writer.
@@ -130,6 +133,43 @@ public sealed class AudioProcessor
 
     private static bool IsMp3(string path)
         => Path.GetExtension(path).Equals(".mp3", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Stops an album whose MP3s hold no bytes at all.
+    /// <para>
+    /// A Nextcloud file that has left its sync root — recycled and restored, dragged into a
+    /// second root — stays behind as a placeholder whose content will never arrive: length 0,
+    /// and unlike a dehydrated file nothing in its attributes says so, so
+    /// <see cref="CloudFiles.IsPlaceholder"/> finds nothing to hydrate and the pipeline walks
+    /// straight into ffmpeg. ffmpeg then exits with <c>-1094995529</c>
+    /// (<c>AVERROR_INVALIDDATA</c>, "Invalid data found when processing input"), which says
+    /// nothing whatsoever about where the audio went. Only the source can be repaired, hence a
+    /// message that names the actual problem instead of a review folder full of unplayable stubs.
+    /// </para>
+    /// Non-audio files are left alone: an empty cover copies over harmlessly.
+    /// </summary>
+    private static void EnsureTracksHaveContent(IReadOnlyList<string> files)
+    {
+        var tracks = files.Where(IsMp3).ToList();
+
+        // FileInfo.Length is the *logical* size, which a dehydrated placeholder reports correctly
+        // without being fetched — asking costs nothing and downloads nothing.
+        var empty = tracks.Where(f => new FileInfo(f).Length == 0)
+            .Select(Path.GetFileName)
+            .ToList();
+
+        if (empty.Count == 0)
+            return;
+
+        var named = string.Join(", ", empty.Take(3));
+        if (empty.Count > 3)
+            named += $" … (+{empty.Count - 3})";
+
+        throw new IOException(
+            $"{empty.Count} von {tracks.Count} MP3s sind 0 Byte groß und enthalten kein Audio: {named}. "
+            + "Das sind leere Cloud-Platzhalter — der Inhalt muss erst aus Nextcloud "
+            + "(Server oder Papierkorb) zurückgeholt werden.");
+    }
 
     private async Task EncodeAsync(string source, string target, CancellationToken ct)
     {
